@@ -6,9 +6,14 @@ additive Gaussian) by minimising the Whittle deviance. The minimum deviance
 per independent Welch segment, d1, is the noncentrality that one segment
 contributes to a likelihood-ratio test of lambda = 0 against lambda = 1, so a
 test with 80% power at alpha = 0.05 (1 df, noncentrality 7.85) needs
-K = 7.85 / d1 independent segments. With 4 s Hann windows at 50% overlap,
-Welch's effective number of independent segments is about 1.8 per 4 s of
-data (Welch 1967), so the recording length is K * 4 / 1.8 seconds.
+K = 7.85 / d1 independent segments. d1 sums the deviance over 0.25 Hz bins as
+if they were independent. Under a 4 s Hann window they are not: the power at
+neighbouring bins is correlated (4/9 at one bin, 1/36 at two), which inflates
+the variance of a sum over bins by 1 + 2(4/9) + 2(1/36) = 1.94, and segments
+overlapping by 50% are correlated by 1/36 (Welch 1967), which leaves
+2 / (1 + 2/36) = 1.89 independent segments per 4 s. A 4 s stretch of data
+therefore carries about one independent spectrum (1.89 / 1.94 = 0.97), and
+the recording length is K * 1.94 * 4 / 1.89 seconds.
 
 Frequencies 2-30 Hz at 0.25 Hz resolution. Peak height is the peak's
 height relative to the background at its centre frequency. Also reported:
@@ -25,6 +30,8 @@ from scipy.optimize import minimize
 
 F = np.arange(2.0, 30.0001, 0.25)
 NC80 = 7.85           # noncentrality for 80% power, 1 df, alpha = 0.05
+BIN_CORR = 1 + 2 * (4 / 9) + 2 * (1 / 36)   # Hann window: variance inflation of a sum over neighbouring bins
+SEG_PER_4S = 2 / (1 + 2 / 36)               # independent 4 s Hann segments per 4 s of data at 50% overlap
 
 
 def spectrum(off, chi, amp_rel, cf, bw, lam):
@@ -77,7 +84,7 @@ def main():
         d1 = dev_per_segment(P)
         K = NC80 / d1
         print(f"{chi:>8.1f} {bw:>7.1f} {h:>7.1f} {shape_residual(chi, bw):>8.2f} "
-              f"{d1:>12.2e} {K:>11.0f} {K * 4 / 1.8 / 60:>8.1f}")
+              f"{d1:>12.2e} {K:>11.0f} {K * BIN_CORR * 4 / SEG_PER_4S / 60:>8.1f}")
 
 
 if __name__ == "__main__":
