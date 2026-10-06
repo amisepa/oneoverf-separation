@@ -657,14 +657,24 @@ def fig_estimates(outdir):
     that carries lam_alt (the two-condition estimate with the instrument from
     the other half of the recording) is drawn as a pair: both estimates with
     their intervals, joined by a band that spans the range between them.
+    Below each pair, the estimate from three disjoint thirds
+    (results/hbn_lambda_gmm_thirds.csv): its interval and every root of the
+    moment condition, none of them singled out.
     """
     from matplotlib.lines import Line2D
     I = pd.read_csv(os.path.join(RES, "identification_summary.csv"))
     for c in ("lam_alt", "lo_alt", "hi_alt", "n_patients"):
         if c not in I:
             I[c] = np.nan
-    lo_x, hi_x, dy = -0.9, 2.2, 0.19
-    fig, ax = plt.subplots(figsize=(W2 * 0.62, 5.0))
+    f3 = os.path.join(RES, "hbn_lambda_gmm_thirds.csv")
+    T3 = pd.read_csv(f3) if os.path.exists(f3) else pd.DataFrame()
+    if len(T3):
+        T3 = T3[(T3.band == "alpha") & (T3.estimator == "thirds")]
+        T3 = {(("knee + plateau" if m == "knee_plateau" else "power law") + ", " + w): r
+              for m, w, r in zip(T3.model, T3.window, T3.itertuples())}
+    C3 = "#7b4fa3"
+    lo_x, hi_x, dy = -0.9, 2.2, 0.27
+    fig, ax = plt.subplots(figsize=(W2 * 0.62, 5.4))
     ax.axvline(0, color=C0, lw=0.8, ls="--")
     ax.axvline(1, color=C1, lw=0.8, ls="--")
     order = ["between conditions: eyes closed vs open",
@@ -681,7 +691,7 @@ def fig_estimates(outdir):
                order[4]: "Intracranial rest (within session)",
                order[5]: "Test-retest (between sessions)",
                order[6]: "Propofol, baseline vs moderate (20 volunteers)"}
-    y, ticks, labels, paired = 0, [], [], False
+    y, ticks, labels, paired, thirds = 0, [], [], False, False
     for g in order:
         G_ = I[I.design == g]
         if G_.empty:
@@ -699,18 +709,29 @@ def fig_estimates(outdir):
                 spec = spec.replace(" channels", f" channels, {int(r.n_patients)} patients")
             if np.isfinite(r.lam_alt):
                 paired = True
-                ax.plot([r.lam_alt, r.lam], [y, y], color=GREY, lw=5, alpha=0.4,
+                t3 = T3.get(r.spec) if len(T3) else None
+                # with thirds the row holds three lines, otherwise two
+                ya, yb = (y - dy, y) if t3 is not None else (y - 0.19, y + 0.19)
+                ax.plot([r.lam_alt, r.lam], [(ya + yb) / 2] * 2, color=GREY, lw=5, alpha=0.4,
                         solid_capstyle="butt", zorder=1)
-                interval(ax, r.lo, r.hi, y - dy, lo_x, hi_x, INK, ms=3, lw=1)
-                ax.plot(r.lam, y - dy, "o", color=INK, ms=3)
-                interval(ax, r.lo_alt, r.hi_alt, y + dy, lo_x, hi_x, INK, ms=3, lw=1)
-                ax.plot(r.lam_alt, y + dy, "o", color=INK, mfc="white", ms=3, mew=0.8)
+                interval(ax, r.lo, r.hi, ya, lo_x, hi_x, INK, ms=3, lw=1)
+                ax.plot(r.lam, ya, "o", color=INK, ms=3)
+                interval(ax, r.lo_alt, r.hi_alt, yb, lo_x, hi_x, INK, ms=3, lw=1)
+                ax.plot(r.lam_alt, yb, "o", color=INK, mfc="white", ms=3, mew=0.8)
+                if t3 is not None:
+                    thirds = True
+                    interval(ax, t3.lo, t3.hi, y + dy, lo_x, hi_x, C3, ms=3, lw=1)
+                    roots = [float(v) for v in str(t3.roots).split()]
+                    ax.plot([v for v in roots if lo_x <= v <= hi_x],
+                            [y + dy] * sum(lo_x <= v <= hi_x for v in roots),
+                            "D", color=C3, mfc="white", ms=2.6, mew=0.8, ls="")
             else:
                 interval(ax, r.lo, r.hi, y, lo_x, hi_x, INK, lw=1)
                 ax.plot(r.lam, y, "o", color=INK, ms=3.5)
             ticks.append(y)
             labels.append(spec)
-            y += 1
+            # a row that carries three lines needs more room
+            y += 1.5 if np.isfinite(r.lam_alt) and len(T3) and r.spec in T3 else 1
         y += 0.4
     ax.set_yticks(ticks)
     ax.set_yticklabels(labels, fontsize=5.5)
@@ -726,6 +747,9 @@ def fig_estimates(outdir):
                           ms=3, label="instrument from the half of the background"),
                    Line2D([], [], color=GREY, lw=5, alpha=0.4, solid_capstyle="butt",
                           label="range between the two")] + handles
+    if thirds:
+        handles.insert(3, Line2D([], [], color=C3, marker="D", mfc="white", mew=0.8, ls="-", lw=1,
+                                 ms=2.6, label="three disjoint thirds: interval and every root"))
     ax.legend(handles=handles, loc="upper right", bbox_to_anchor=(1.0, -0.075), ncol=1,
               fontsize=5.5, handlelength=2.2)
     fig.tight_layout()
