@@ -86,7 +86,8 @@ def effect_curve(la, lb, x=None, covariates=None, grid=None, nboot=2000, rng=Non
     the effect is the mean difference). Rows with non-finite values are
     dropped. Returns a dict with s_a, s_b, lam_star, its pairs-bootstrap
     percentile CI and Bayesian-bootstrap HDI, the share of Bayesian draws with
-    a crossover inside [0, 1], and the curve (grid, estimate, 2.5%, 97.5%).
+    a crossover inside [0, 1], the draws themselves (lam_star_draws), and the
+    curve (grid, estimate, 2.5%, 97.5%).
     s_b_ci is the pairs-bootstrap CI of s_b; when it includes 0 the crossover
     is unbounded (lam_star_bounded False) and its intervals mean nothing.
     """
@@ -134,4 +135,4 @@ def effect_curve(la, lb, x=None, covariates=None, grid=None, nboot=2000, rng=Non
                 ci=tuple(np.nanpercentile(ls_boot, [2.5, 97.5])),
                 hdi=hdi(ls_bayes),
                 p_cross_in_01=float(np.mean((ls_bayes >= 0) & (ls_bayes <= 1))),
-                grid=grid, curve=curve)
+                lam_star_draws=ls_bayes, grid=grid, curve=curve)

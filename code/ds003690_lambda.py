@@ -3,10 +3,18 @@
 Data: ds003690_epochs.py output (2-s eyes-open epochs, posterior ROI, three
 DPSS tapers per epoch, pupil, EOG and temporal high-frequency power).
 
-Per epoch and taper the aperiodic background is fitted by least squares on
-ln power over 2-40 Hz with 6-16 Hz left out, corrected for the log of an
-exponentially distributed periodogram (+ Euler's constant); alpha band =
-individual alpha frequency +/- 2 Hz (from the participant's mean spectrum).
+Alpha band = individual alpha frequency +/- 2 Hz (from the participant's
+mean spectrum). Per epoch and taper the aperiodic background in the band
+comes from a power law fitted by least squares on ln power to the two flanks
+of the band only, 2-6 and 26-32 Hz (the gap leaves out the alpha peak, its
+harmonic and the beta range), corrected for the log of a gamma-distributed
+spectral estimate (ap_models.loglog_fit) and rescaled per participant so
+that its mean over epochs equals the participant's mean spectrum
+interpolated across the gap (ap_models.flank_level). --background power-law
+gives the earlier background instead: one power law over 2-40 Hz with 6-16 Hz
+left out, the shape of the gamma distribution (1 for one periodogram, more
+for the mean of several channels) estimated per participant from the
+residual variance.
 Band total T comes from one taper, the background B inside a = T - B from a
 second and the instrument/weights from a third; all six assignments are
 pooled. lambda is estimated with lambda_gmm.estimate_levels (participant-
@@ -16,12 +24,25 @@ with a participant-cluster bootstrap. For comparison: the within-participant
 slope of ln a on ln b over epochs with a > 0, instrumented by the third
 taper's ln b.
 
+With the flank background and the real data, two further tables get this
+recording's rows (those of other recordings are kept):
+results/within_recording_variants.csv, the estimate without covariates for
+the primary flanks and for four other choices of flanks, with the
+reliability of the background across tapers; and
+results/within_recording_controls.csv, the same analysis in two bands
+without a rhythm (31-35 and 36-40 Hz, flanks 4 Hz below and 6 Hz above a
+12-Hz gap, 4 Hz above for the upper band): the relative residual
+sum(T - B) / sum(B), the slope with which ln T follows ln B (tracking), and
+the root of the moment condition, if any, with the share of bootstrap
+samples without one.
+
 --simulate L replaces the data by synthetic epochs built from each
 participant's own mean background, alpha peak and epoch-to-epoch background
 fluctuation, with coupling L and the same three-taper noise, to check that
 the analysis recovers L on data like these.
 
 Usage: python ds003690_lambda.py [--data DIR] [--nboot 200] [--simulate L]
+       [--background flanks|power-law]
 """
 import argparse
 import glob
@@ -34,30 +55,41 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lambda_gmm as G
+from ap_models import flank_bins, flank_level, loglog_fit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RES = os.path.join(HERE, "..", "results")
 FIT = (2.0, 40.0)
 CENSOR = (6.0, 16.0)
 EULER = 0.5772156649
+GRID = np.linspace(-1.0, 3.0, 161)
+FLANKS = ((2.0, 6.0), (26.0, 32.0))        # fit bins of the alpha background
+VARIANTS = (((2.0, 6.0), (26.0, 36.0)), ((3.0, 6.0), (26.0, 32.0)),
+            ((2.0, 5.0), (26.0, 32.0)), ((2.0, 6.0), (28.0, 36.0)))
+# bands without a rhythm, with their flanks
+CONTROLS = (((31.0, 35.0), ((23.0, 27.0), (39.0, 45.0))),
+            ((36.0, 40.0), ((28.0, 32.0), (44.0, 48.0))))
 
 
 def fit_background(P, f):
-    """Vectorised censored log-log fit; P (..., n_f). Returns ln L (..., n_f)."""
+    """Vectorised censored log-log fit to the spectra of one participant;
+    P (..., n_f). Returns ln L (..., n_f)."""
     keep = (f >= FIT[0]) & (f <= FIT[1]) & ~((f >= CENSOR[0]) & (f <= CENSOR[1]))
     X = np.column_stack([np.ones(keep.sum()), np.log(f[keep])])
-    Y = np.log(np.maximum(P[..., keep], 1e-30)).reshape(-1, keep.sum()).T
-    beta = np.linalg.lstsq(X, Y, rcond=None)[0]              # 2 x N
-    beta[0] += EULER
+    beta = loglog_fit(P[..., keep].reshape(-1, keep.sum()).T, X)        # 2 x N
     lf = np.log(np.maximum(f, 1e-9))
     lnL = beta[0][:, None] + beta[1][:, None] * lf[None, :]
     return lnL.reshape(P.shape)
 
 
 def iaf(Pm, f):
-    lnL = fit_background(Pm[None, :], f)[0]
+    """Peak frequency in 7-13 Hz of the mean spectrum, if its ln power exceeds
+    the censored least-squares log-log line + Euler's constant by 0.1."""
+    keep = (f >= FIT[0]) & (f <= FIT[1]) & ~((f >= CENSOR[0]) & (f <= CENSOR[1]))
+    X = np.column_stack([np.ones(keep.sum()), np.log(f[keep])])
+    beta = np.linalg.lstsq(X, np.log(np.maximum(Pm[keep], 1e-30)), rcond=None)[0]
     s = (f >= 7) & (f <= 13)
-    resid = np.log(Pm[s]) - lnL[s]
+    resid = np.log(Pm[s]) - (beta[0] + EULER + beta[1] * np.log(f[s]))
     return float(f[s][np.argmax(resid)]) if np.max(resid) > 0.1 else np.nan
 
 
@@ -104,18 +136,28 @@ def simulate(units, lam, rng):
     return out
 
 
-def band_arrays(units):
-    """Per epoch and taper: T (band total), B (fitted background, band mean)."""
+def band_arrays(units, flanks=None, fixed=None):
+    """Per epoch and taper: T (band total), B (fitted background, band mean).
+    flanks: fit the background to these two flanks (ap_models.flank_level,
+    each taper on its own, rescaled to the mean spectrum over epochs and
+    tapers); None: the censored power law of fit_background. fixed: band
+    (lo, hi) in Hz; None: individual alpha frequency +/- 2 Hz. Participants
+    are those with an alpha peak in either case."""
     rows = []
     for u in units:
         f, P = u["f"], u["P"]
         cf = iaf(P.mean(axis=(0, 1)), f)
         if not np.isfinite(cf):
             continue
-        band = (f >= cf - 2) & (f <= cf + 2)
-        L = np.exp(fit_background(P, f))
+        lo, hi = (cf - 2, cf + 2) if fixed is None else fixed
+        band = (f >= lo) & (f <= hi)
         T = P[..., band].mean(-1)                        # epochs x tapers
-        B = L[..., band].mean(-1)
+        if flanks is None:
+            B = np.exp(fit_background(P, f))[..., band].mean(-1)
+        else:
+            bins = np.where(flank_bins(f, flanks))[0]
+            B = np.column_stack([flank_level(P[:, a], f, bins, band, flanks, P.mean(axis=(0, 1)))
+                                 for a in range(P.shape[1])])
         rows.append(dict(subject=u["subject"], group=u["group"], T=T, B=B, cov=u["cov"], iaf=cf))
     return rows
 
@@ -164,6 +206,70 @@ def instrument_strength(rows, use_cov):
     return float(np.mean(rs))
 
 
+def reliability(rows):
+    """Within-participant correlation of ln B between two tapers, mean over
+    participants."""
+    return float(np.nanmean([np.corrcoef(np.log(r["B"][:, 0]), np.log(r["B"][:, 1]))[0, 1]
+                             for r in rows]))
+
+
+def tracking(T, B, Bz, grp, nboot, rng):
+    """For a band without a rhythm, where T should equal B up to noise: the
+    relative residual sum(T - B) / sum(B), and the within-participant slope
+    cov(ln T, z) / cov(ln B, z) against the instrument z = ln Bz (1 if the
+    band follows the fitted background), with a participant-bootstrap
+    interval."""
+    _, inv = np.unique(grp, return_inverse=True)
+    w = lambda x: x - (np.bincount(inv, x) / np.bincount(inv))[inv]
+    z = w(np.log(Bz))
+    num = np.bincount(inv, w(np.log(np.maximum(T, 1e-30))) * z)
+    den = np.bincount(inv, w(np.log(B)) * z)
+    n = num.size
+    bs = [num[i].sum() / den[i].sum() for i in (rng.integers(0, n, n) for _ in range(nboot))]
+    lo, hi = np.percentile(bs, [2.5, 97.5]) if nboot else (np.nan, np.nan)
+    return dict(resid=float(np.sum(T - B) / np.sum(B)), track=float(num.sum() / den.sum()),
+                track_lo=float(lo), track_hi=float(hi))
+
+
+def flank_label(flanks):
+    return ", ".join(f"{a:g}-{b:g}" for a, b in flanks)
+
+
+def merge_rows(name, rows):
+    """Write rows to results/name, replacing the rows of the same dataset and
+    recording and keeping those of the others."""
+    D = pd.DataFrame(rows)
+    path = os.path.join(RES, name)
+    if os.path.exists(path):
+        old = pd.read_csv(path)
+        key = lambda d: d.dataset + "/" + d.recording
+        D = pd.concat([old[~key(old).isin(key(D))], D])
+    D.to_csv(path, index=False)
+
+
+def variant_row(key, flanks, r, rel):
+    """Row of within_recording_variants.csv from a result of run()."""
+    row = dict(key, flanks=flank_label(flanks), primary=flanks == FLANKS, n_units=r["n_units"],
+               lam=r["lam"], lo=r["lo"], hi=r["hi"], fail=r["fail"], r=rel)
+    print(f"  flanks {row['flanks']:12s} lambda {r['lam']:+.3f} [{r['lo']:+.2f}, {r['hi']:+.2f}] "
+          f"r {rel:.2f}", flush=True)
+    return row
+
+
+def control_row(key, band, flanks, r, t, rel):
+    """Row of within_recording_controls.csv from the results of run() and
+    tracking() in a band without a rhythm."""
+    row = dict(key, band=f"{band[0]:g}-{band[1]:g}", flanks=flank_label(flanks),
+               n_units=r["n_units"], resid_pct=100 * t["resid"], track=t["track"],
+               track_lo=t["track_lo"], track_hi=t["track_hi"], lam=r["lam"], n_roots=r["n_roots"],
+               lo=r["lo"], hi=r["hi"], fail=r["fail"], r=rel)
+    print(f"  control {row['band']} Hz: residual {row['resid_pct']:+.1f}%, tracking "
+          f"{t['track']:.2f} [{t['track_lo']:.2f}, {t['track_hi']:.2f}], lambda {r['lam']:+.3f} "
+          f"({r['n_roots']} roots, bootstrap without a root {r['fail']:.2f}), r {rel:.2f}",
+          flush=True)
+    return row
+
+
 def iv_log(rows):
     """Within-participant IV slope of ln a (taper A) on ln b (B), instrument ln b (C)."""
     num = den = 0.0
@@ -184,7 +290,7 @@ def iv_log(rows):
 
 def run(rows, use_cov, nboot, rng):
     T, B, Bz, grp, X = stack(rows, use_cov)
-    est = G.estimate_levels(T, B, Bz, grp, X)
+    est = G.estimate_levels(T, B, Bz, grp, X, grid=GRID)
     subs = [r["subject"] for r in rows]
     bs = []
     for _ in range(nboot):
@@ -195,7 +301,7 @@ def run(rows, use_cov, nboot, rng):
             r["subject"] = f"{r['subject']}_{j}"
             rr.append(r)
         T2, B2, Bz2, g2, X2 = stack(rr, use_cov)
-        e = G.estimate_levels(T2, B2, Bz2, g2, X2)
+        e = G.estimate_levels(T2, B2, Bz2, g2, X2, grid=GRID)
         if e["roots"]:
             bs.append(min(e["roots"], key=lambda x: abs(x - est["lam"])) if np.isfinite(est["lam"])
                       else e["lam"])
@@ -205,7 +311,8 @@ def run(rows, use_cov, nboot, rng):
     ok = np.isfinite(bs)
     lo, hi = (np.percentile(bs[ok], [2.5, 97.5]) if ok.sum() > 10 else (np.nan, np.nan))
     return dict(lam=est["lam"], lo=lo, hi=hi, fail=float(1 - ok.mean()), n_units=len(subs),
-                n_epochs=int(T.size / 6), gamma=np.round(est["gamma"], 3).tolist())
+                n_epochs=int(T.size / 6), gamma=np.round(est["gamma"], 3).tolist(),
+                n_roots=len(est["roots"]))
 
 
 def main():
@@ -214,14 +321,18 @@ def main():
     ap.add_argument("--nboot", type=int, default=200)
     ap.add_argument("--simulate", type=float, default=None)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--background", choices=("flanks", "power-law"), default="flanks",
+                    help="flanks: power law through 2-6 and 26-32 Hz, rescaled to the mean "
+                         "spectrum; power-law: one fit over 2-40 Hz without 6-16 Hz")
     a = ap.parse_args()
     rng = np.random.default_rng(a.seed)
     units = load(a.data)
     if a.simulate is not None:
         units = simulate(units, a.simulate, rng)
-    rows = band_arrays(units)
+    flanks = FLANKS if a.background == "flanks" else None
+    rows = band_arrays(units, flanks)
     # instrument strength: within-participant correlation of ln B across two tapers
-    rel = np.nanmean([np.corrcoef(np.log(r["B"][:, 0]), np.log(r["B"][:, 1]))[0, 1] for r in rows])
+    rel = reliability(rows)
     lam_iv, n_iv = iv_log(rows)
     tag = "data" if a.simulate is None else f"simulated lambda = {a.simulate}"
     print(f"{tag}: {len(rows)} participants with an alpha peak; within-participant "
@@ -237,8 +348,25 @@ def main():
             print(f"  {grp:6s} covariates={cname:18s} instrument r {r['instrument_r']:.2f} lambda {r['lam']:+.3f} "
                   f"[{r['lo']:+.2f}, {r['hi']:+.2f}] fail {r['fail']:.2f} "
                   f"n {r['n_units']}/{r['n_epochs']} gamma {r['gamma']}", flush=True)
-    name = "ds003690_lambda.csv" if a.simulate is None else f"ds003690_lambda_sim{a.simulate}.csv"
+    suffix = "" if flanks else "_c16"
+    name = (f"ds003690_lambda{suffix}.csv" if a.simulate is None
+            else f"ds003690_lambda_sim{a.simulate}{suffix}.csv")
     pd.DataFrame(out).to_csv(os.path.join(RES, name), index=False)
+    if flanks is None or a.simulate is not None:
+        return
+    # other flanks, and bands without a rhythm; no covariates, all participants
+    key = dict(dataset="ds003690", recording="eyes open")
+    var = [variant_row(key, FLANKS, out[0], rel)]
+    for fl in VARIANTS:
+        rr = band_arrays(units, fl)
+        var.append(variant_row(key, fl, run(rr, [], a.nboot, rng), reliability(rr)))
+    ctl = []
+    for band, fl in CONTROLS:
+        rr = band_arrays(units, fl, band)
+        ctl.append(control_row(key, band, fl, run(rr, [], a.nboot, rng),
+                               tracking(*stack(rr, [])[:4], a.nboot, rng), reliability(rr)))
+    merge_rows("within_recording_variants.csv", var)
+    merge_rows("within_recording_controls.csv", ctl)
 
 
 if __name__ == "__main__":

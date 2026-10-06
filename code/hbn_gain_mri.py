@@ -13,7 +13,12 @@ participants (power-law background, 6-16 Hz censored; hbn_kp_fits.csv).
      beta_SCD(ln b) * dSCD/dage / s_b, with a bootstrap interval. phi enters
      the effective coupling 1 - (1 - lambda)(1 - phi) of the main text.
   4. The crossover lambda* in this subsample without and with SCD as a
-     covariate (lambda_curve.effect_curve).
+     covariate (lambda_curve.effect_curve), and the age slopes of ln a
+     (lambda = 0) and ln a - ln b (lambda = 1) without and with it, each with
+     a pairs-bootstrap interval.
+  5. phi_a, the share of the age slope of ln a (the lambda = 0 decline)
+     carried by SCD: beta_SCD(ln a) * dSCD/dage / s_a, which is
+     1 - (slope with SCD) / (slope without), with a bootstrap interval.
 
 Writes results/hbn_gain_mri_<region>.csv.
 
@@ -47,9 +52,9 @@ def stats(d, region):
     g = ols(scd, design(d))[1]                               # mm per year
     Xs = design(d, f"scd_{region}")
     ba, bb = ols(la, Xs)[2], ols(lb, Xs)[2]                 # per mm, at fixed age
-    s_b = ols(lb, design(d))[1]                              # total age slope of ln b
+    s_a, s_b = ols(la, design(d))[1], ols(lb, design(d))[1]  # total age slopes
     return dict(scd_per_year=g, beta_a=ba, beta_b=bb, beta_diff=ba - bb, s_b=s_b,
-                phi=bb * g / s_b)
+                phi=bb * g / s_b, s_a=s_a, phi_a=ba * g / s_a)
 
 
 def main():
@@ -85,6 +90,8 @@ def main():
             row[f"lam_star{tag}"] = r["lam_star"]
             row[f"hdi_lo{tag}"], row[f"hdi_hi{tag}"] = r["hdi"]
             row[f"lam0{tag}"], row[f"lam1{tag}"] = r["curve"][0][0], r["curve"][-1][0]
+            for lam, c in ((0, r["curve"][0]), (1, r["curve"][-1])):
+                row[f"lam{lam}{tag}_lo"], row[f"lam{lam}{tag}_hi"] = c[1], c[2]
         rows.append(row)
         print(f"{cond}: n {n}; SCD {row['scd_per_year']:+.3f} mm/y "
               f"[{row['scd_per_year_lo']:+.3f}, {row['scd_per_year_hi']:+.3f}]; "
@@ -96,6 +103,13 @@ def main():
               f"{row['lam_star']:.2f} [{row['hdi_lo']:.2f}, {row['hdi_hi']:.2f}] -> with SCD "
               f"{row['lam_star_scd']:.2f} [{row['hdi_lo_scd']:.2f}, {row['hdi_hi_scd']:.2f}]",
               flush=True)
+        pct = lambda v: 100 * (np.exp(v) - 1)
+        print("    % per year: " + "; ".join(
+            f"lambda={lam}{' with SCD' if tag else ''} {pct(row[f'lam{lam}{tag}']):+.1f} "
+            f"[{pct(row[f'lam{lam}{tag}_lo']):+.1f}, {pct(row[f'lam{lam}{tag}_hi']):+.1f}]"
+            for tag in ("", "_scd") for lam in (0, 1))
+            + f"; share of the lambda=0 slope carried by SCD {row['phi_a']:.2f} "
+              f"[{row['phi_a_lo']:.2f}, {row['phi_a_hi']:.2f}]", flush=True)
     pd.DataFrame(rows).to_csv(os.path.join(RES, f"hbn_gain_mri_{a.region}.csv"), index=False)
 
 

@@ -6,7 +6,7 @@ Each bipolar channel with a peak in 7-13 Hz (residual above the censored
 background fit > 0.1 in ln power, as in ds003690_lambda.py) is a unit with
 its own intrinsic strength; epochs flagged for gross artefacts are dropped.
 The analysis is that of ds003690_lambda.py (per-taper censored log-log fit
-over 2-40 Hz, 6-16 Hz left out, + Euler's constant; band = peak +/- 2 Hz;
+over 2-40 Hz, 6-16 Hz left out, ap_models.loglog_fit; band = peak +/- 2 Hz;
 T, B and the instrument from three different tapers, all six assignments
 pooled; lambda_gmm.estimate_levels), with EOG (0.5-4 Hz) and EMG
 (60-95 Hz) log power as optional covariates and a bootstrap over patients
@@ -31,7 +31,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lambda_gmm as G
-from ds003690_lambda import band_arrays, iv_log, simulate, stack
+from ds003690_lambda import GRID, band_arrays, iv_log, simulate, stack
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RES = os.path.join(HERE, "..", "results")
@@ -55,7 +55,7 @@ def load(data):
 
 def run(rows, use_cov, nboot, rng):
     T, B, Bz, grp, X = stack(rows, use_cov)
-    est = G.estimate_levels(T, B, Bz, grp, X)
+    est = G.estimate_levels(T, B, Bz, grp, X, grid=GRID)
     pats = sorted({r["group"] for r in rows})
     by = {p: [r for r in rows if r["group"] == p] for p in pats}
     bs = []
@@ -66,7 +66,7 @@ def run(rows, use_cov, nboot, rng):
                 r2 = dict(r)
                 r2["subject"] = f"{r['subject']}_{j}"
                 rr.append(r2)
-        e = G.estimate_levels(*stack(rr, use_cov))
+        e = G.estimate_levels(*stack(rr, use_cov), grid=GRID)
         if e["roots"] and np.isfinite(est["lam"]):
             bs.append(min(e["roots"], key=lambda x: abs(x - est["lam"])))
         else:

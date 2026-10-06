@@ -24,24 +24,70 @@ fit, which uses only frequencies outside the band (a censored or flanking
 fit). The three are then estimated from disjoint data, so noise in b cannot
 attenuate lambda as it does when one estimate of b appears in both r and z.
 Both assignments (A, B) = (1, 2) and (2, 1) are pooled.
+
+The instrument and the weights can instead come from half B, the half that
+supplies b (instrument="background"); t is then the quantity estimated from
+separate data. The two choices agree when the halves share one true
+background. When the true background differs between the halves of a
+recording, taking the instrument from the half of t reads high and taking it
+from the half of b reads low; the gap between the two measures that
+sensitivity (hbn_half_assignment.py).
+
+With three disjoint sets of segments (instrument="third", arrays with three
+columns) t, b and the instrument each come from a different set, and the six
+ways of assigning them are pooled. No two of the three then share a set, so
+neither a background that differs between the sets nor noise in its fit
+enters the moment twice. The sets are smaller, so the estimate is noisier.
 """
 import numpy as np
 from scipy import optimize
 from scipy.optimize import brentq
 
 
-def _stack(t1, t2, b1, b2):
-    """Pool the two half assignments into flat arrays."""
+def _stack(t1, t2, b1, b2, instrument="total"):
+    """Pool the two half assignments into flat arrays.
+
+    instrument: the half whose background fit gives the instrument and the
+    weights, "total" (the half of t) or "background" (the half of b);
+    "third" takes three replicates and pools the six assignments (_stack3).
+    """
+    if instrument == "third":
+        return _stack3(t1, t2, b1, b2)
+    if instrument not in ("total", "background"):
+        raise ValueError("instrument must be 'total', 'background' or 'third'")
     T1, T2, B1, B2, Z, W = [], [], [], [], [], []
     for sa, sb in ((0, 1), (1, 0)):
+        si = sa if instrument == "total" else sb
         ok = (np.all(np.isfinite([t1[:, sa], t2[:, sa], b1[:, sb], b2[:, sb],
                                   b1[:, sa], b2[:, sa]]), 0)
               & (b1[:, sb] > 0) & (b2[:, sb] > 0) & (b1[:, sa] > 0) & (b2[:, sa] > 0))
         T1.append(t1[ok, sa]); T2.append(t2[ok, sa])
         B1.append(b1[ok, sb]); B2.append(b2[ok, sb])
-        z = np.log(b2[ok, sa]) - np.log(b1[ok, sa])
+        z = np.log(b2[ok, si]) - np.log(b1[ok, si])
         Z.append(z - z.mean())
-        W.append(np.sqrt(b1[ok, sa] * b2[ok, sa]))       # scale from half A
+        W.append(np.sqrt(b1[ok, si] * b2[ok, si]))       # scale from the same half
+    return [np.concatenate(v) for v in (T1, T2, B1, B2, Z, W)]
+
+
+def _stack3(t1, t2, b1, b2):
+    """Pool the six assignments of three replicates into flat arrays.
+
+    Arrays of shape (n_subjects, 3). In each assignment t comes from
+    replicate sa, b from sb, and the instrument and the weights from the
+    background fit of si, with sa, sb, si all different.
+    """
+    if any(np.shape(v)[1] != 3 for v in (t1, t2, b1, b2)):
+        raise ValueError("instrument='third' needs three replicates per condition")
+    T1, T2, B1, B2, Z, W = [], [], [], [], [], []
+    for sa, sb, si in ((0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0)):
+        ok = (np.all(np.isfinite([t1[:, sa], t2[:, sa], b1[:, sb], b2[:, sb],
+                                  b1[:, si], b2[:, si]]), 0)
+              & (b1[:, sb] > 0) & (b2[:, sb] > 0) & (b1[:, si] > 0) & (b2[:, si] > 0))
+        T1.append(t1[ok, sa]); T2.append(t2[ok, sa])
+        B1.append(b1[ok, sb]); B2.append(b2[ok, sb])
+        z = np.log(b2[ok, si]) - np.log(b1[ok, si])
+        Z.append(z - z.mean())
+        W.append(np.sqrt(b1[ok, si] * b2[ok, si]))
     return [np.concatenate(v) for v in (T1, T2, B1, B2, Z, W)]
 
 
@@ -57,21 +103,23 @@ def _m2(lam, T1, T2, B1, B2, Z, S):
     return np.sum(W * Z * (R2 - ed * R1)) / np.sum(W), ed
 
 
-def estimate(t1, t2, b1, b2, grid=None, near=None):
+def estimate(t1, t2, b1, b2, grid=None, near=None, instrument="total"):
     """lambda and delta from split-sample band powers.
 
     t1, t2: total band power, b1, b2: fitted aperiodic band power, each of
-    shape (n_subjects, 2) with column s the estimate from half s, for
-    conditions 1 and 2. The profiled moment is scanned over grid (default
+    shape (n_subjects, 2) with column s the estimate from half s (three
+    columns, one per third, with instrument="third"), for conditions 1 and 2. The profiled moment is scanned over grid (default
     -0.5 to 1.5; outside it the weights become extreme and spurious roots
     appear). Returns dict(lam, delta, roots): lam is the root nearest `near`
     if given (used to track one root across bootstrap samples), otherwise
     the downward crossing, the direction of the moment at the true value,
     nearest the grid point where the moment is smallest in absolute value;
-    nan if the moment does not change sign.
+    nan if the moment does not change sign. instrument selects the half that
+    supplies the instrument and the weights (see _stack), or "third" for
+    three replicates (see _stack3).
     """
     grid = np.linspace(-0.5, 1.5, 81) if grid is None else grid
-    arrs = _stack(t1, t2, b1, b2)
+    arrs = _stack(t1, t2, b1, b2, instrument)
     f = lambda g: _m2(g, *arrs)[0]
     vals = np.array([f(g) for g in grid])
     roots, down = [], []
@@ -155,18 +203,19 @@ def estimate_levels(T, B, Bz, groups, X=None, grid=None):
     return dict(lam=float(lam), gamma=profile(lam)[1], roots=[float(r) for r in roots])
 
 
-def bootstrap(t1, t2, b1, b2, nboot=300, rng=None, grid=None):
+def bootstrap(t1, t2, b1, b2, nboot=300, rng=None, grid=None, instrument="total"):
     """Point estimate plus subject-bootstrap percentile interval.
 
     Each bootstrap sample takes the root nearest the full-sample estimate;
     boot_fail is the share of samples in which the moment had no root.
-    grid is passed to estimate().
+    grid and instrument are passed to estimate().
     """
     rng = rng or np.random.default_rng(0)
-    est = estimate(t1, t2, b1, b2, grid=grid)
+    est = estimate(t1, t2, b1, b2, grid=grid, instrument=instrument)
     n = t1.shape[0]
     near = est["lam"] if np.isfinite(est["lam"]) else None
-    bs = np.array([estimate(t1[i], t2[i], b1[i], b2[i], grid=grid, near=near)["lam"]
+    bs = np.array([estimate(t1[i], t2[i], b1[i], b2[i], grid=grid, near=near,
+                            instrument=instrument)["lam"]
                    for i in (rng.integers(0, n, n) for _ in range(nboot))])
     ok = np.isfinite(bs)
     est.update(ci=tuple(np.percentile(bs[ok], [2.5, 97.5])) if ok.sum() > 10

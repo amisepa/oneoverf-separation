@@ -91,6 +91,7 @@ The accompanying paper is in preparation; a preprint will be linked here.
       test_synth.m, test_lambda_identify.m   checks of synthesis and
                                    identifiability
       hbn_extract_psd.py         download HBN-EEG and compute Welch PSDs
+                                 (full, odd/even, thirds, per-segment ROI)
       hbn_fit.py                 aperiodic fits and band power per subject
       hbn_lambda.py              coupling estimate and (p, q) tests
       hbn_controls.py            window and band specificity controls
@@ -99,6 +100,9 @@ The accompanying paper is in preparation; a preprint will be linked here.
       hbn_age_alpha_robust.py    quality control; age slopes across
                                  estimators; crossover λ*
       hbn_age_alpha_bands.py     fixed band, specparam and scalp-gain checks
+      hbn_age_alpha_phases.py    slopes and crossover below and above an age cut
+      hbn_age_alpha_iaf.py       share of the result due to the band moving with
+                                 alpha frequency
       hbn_topography*.py         topographic test (fitted and fit-free)
       spatial_neff.py            effective number of channels for map
                                  correlations
@@ -109,6 +113,10 @@ The accompanying paper is in preparation; a preprint will be linked here.
       lambda_gmm.py              log-free estimation of λ (two conditions,
                                  or epochs within a recording)
       sim_lambda_gmm.py          simulations of the estimators
+      hbn_thirds.py              HBN λ with total, background and instrument
+                                 from three different thirds of the segments
+      sim_lambda_thirds.py       halves vs thirds when the background differs
+                                 between segments
       psd_utils.py               shared preprocessing and Welch spectra
       dortmund_extract_psd.py, lemon_extract_psd.py, vitaldb_extract.py,
       fetch_open_data.py         download and reduce the other datasets
@@ -155,9 +163,12 @@ specparam, matplotlib and h5py:
     python code/hbn_lambda.py
     python code/hbn_controls.py
     python code/hbn_kp.py --workers 8
+    python code/hbn_thirds.py --workers 8
     python code/hbn_age_alpha.py
     python code/hbn_age_alpha_robust.py      # writes the QC flags used below
     python code/hbn_age_alpha_bands.py
+    python code/hbn_age_alpha_phases.py
+    python code/hbn_age_alpha_iaf.py
     # 3. topographic analyses and their null
     python code/hbn_topography.py --workers 8
     python code/hbn_topography.py --workers 8 --fit-range 4,40 --tag _f4-40
@@ -174,6 +185,7 @@ specparam, matplotlib and h5py:
     python code/sim_calibration.py
     python code/identifiability_power.py
     python code/sim_lambda_gmm.py --out results/sim_lambda_gmm_common.csv
+    python code/sim_lambda_thirds.py
     # 5. other datasets (raw files are deleted after reduction; set
     #    DORTMUND_OUT, LEMON_OUT, VITALDB_OUT, VITALDB_META, EEG_DATA)
     python code/dortmund_extract_psd.py --workers 6
@@ -185,7 +197,7 @@ specparam, matplotlib and h5py:
     python code/chennu_analysis.py
     python code/brake_analysis.py
     python code/ds003690_epochs.py && python code/ds003690_lambda.py
-    python code/dortmund_levels.py --censor-hi 16 && python code/dortmund_levels.py --censor-hi 26
+    python code/dortmund_levels.py --cond ec_pre,eo_pre,ec_post,eo_post --no-cov
     python code/breadth_summary.py && python code/identification_summary.py
     # 6. figures
     python code/figures/make_figures.py figures

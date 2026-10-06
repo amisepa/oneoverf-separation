@@ -18,10 +18,11 @@ Supplementary (--only 11-15)
 Inputs: results/sim01.mat, results/sim02_steepen.mat, results/sim_topography_null_flanks.csv,
 results/hbn_topography_flanks.csv,
 results/hbn_lambda_gmm.csv, results/sim_topography_null.csv,
-results/hbn_age_alpha_robust.csv, results/hbn_age_alpha_crossover.csv, and the local
+results/hbn_age_alpha_robust.csv, results/hbn_age_alpha_crossover.csv,
+results/hbn_age_alpha_phases.csv, results/hbn_age_alpha_spline.csv, and the local
 per-subject files results/hbn_kp_fits.csv and results/hbn_topography*.npz
 (regenerable with the scripts in code/). Ages come from the PSD files in
-$HBN_OUT.
+$HBN_OUT, or from results/hbn_roi.csv (local) when those are absent.
 
 Usage: python make_figures.py OUTDIR [--only 1,2,11]
 """
@@ -75,6 +76,18 @@ def null_bar(ax, x, lo, hi, min_h=0.02):
     pad = max(0.0, (min_h - (hi - lo)) / 2)
     ax.plot([x, x], [lo - pad, hi + pad], color=GREY, lw=6,
             solid_capstyle="butt", alpha=0.6)
+
+
+def interval(ax, lo, hi, y, lo_x, hi_x, color, ends=(True, True), ms=3.5, **kw):
+    """Horizontal interval at y, cut at lo_x and hi_x. A cut end gets an
+    arrowhead, so an interval that runs past the axis is not read as ending
+    there; ends=(False, True) leaves the lower end unmarked."""
+    if not (np.isfinite(lo) and np.isfinite(hi)) or hi < lo_x or lo > hi_x:
+        return
+    ax.plot([max(lo, lo_x), min(hi, hi_x)], [y, y], color=color, **kw)
+    for cut, x, mk, show in ((lo < lo_x, lo_x, "<", ends[0]), (hi > hi_x, hi_x, ">", ends[1])):
+        if cut and show:
+            ax.plot(x, y, mk, color=color, ms=ms, mec="none", clip_on=False, zorder=4)
 
 
 # output names in the current numbering, keyed by the name each function saves
@@ -360,6 +373,10 @@ def load_age_table(model, qc=True):
     for p in glob.glob(os.path.join(os.environ.get("HBN_OUT", "hbn_psd"), "*.npz")):
         d = np.load(p, allow_pickle=True)
         rows.append((str(d["subject"]), float(d["age"])))
+    if not rows:
+        # no PSD files here: the ages copied into the per-subject ROI table
+        roi = pd.read_csv(os.path.join(RES, "hbn_roi.csv"), usecols=["subject", "age"])
+        rows = list(roi.drop_duplicates("subject").itertuples(index=False, name=None))
     ages = pd.DataFrame(rows, columns=["subject", "age"]).drop_duplicates("subject")
     w = w.join(ages.set_index("subject"), how="inner").dropna()
     if qc:
@@ -368,93 +385,142 @@ def load_age_table(model, qc=True):
     return w
 
 
-def slope_ci(x, y, rng, nboot=2000):
+def slope_curve(x, la, lb, grid, rng, nboot=2000):
+    """Age slope of la - g * lb for every g in grid, with its 95% pairs-bootstrap
+    interval (the same resamples at every g)."""
     X = np.c_[np.ones_like(x), x]
-    s = np.linalg.lstsq(X, y, rcond=None)[0][1]
+    Y = np.c_[la, lb]
+    sa, sb = np.linalg.lstsq(X, Y, rcond=None)[0][1]
     n = x.size
-    bs = [np.linalg.lstsq(X[i], y[i], rcond=None)[0][1]
-          for i in (rng.integers(0, n, n) for _ in range(nboot))]
-    return s, *np.percentile(bs, [2.5, 97.5])
+    bs = np.array([np.linalg.lstsq(X[i], Y[i], rcond=None)[0][1]
+                   for i in (rng.integers(0, n, n) for _ in range(nboot))])
+    lo, hi = np.percentile(bs[:, :1] - grid * bs[:, 1:], [2.5, 97.5], axis=0)
+    return sa - grid * sb, lo, hi
+
+
+def spline_trend(x, y, n=100):
+    """Natural cubic spline of y on x (4 df, fitted between the 1st and 99th
+    percentiles of x, as in hbn_age_alpha_robust.spline_derivative)."""
+    import patsy
+    lo, hi = np.percentile(x, [1, 99])
+    D = patsy.dmatrix("cr(x, df=4, lower_bound=lb, upper_bound=ub)",
+                      {"x": np.clip(x, lo, hi), "lb": lo, "ub": hi})
+    beta = np.linalg.lstsq(np.asarray(D), y, rcond=None)[0]
+    xx = np.linspace(lo, hi, n)
+    return xx, np.asarray(patsy.build_design_matrices(
+        [D.design_info], {"x": xx, "lb": lo, "ub": hi})[0]) @ beta
 
 
 def fig4(outdir):
     rng = np.random.default_rng(0)
     wf = load_age_table("fixed")
     wk = load_age_table("knee_plateau")
-    fig = plt.figure(figsize=(W2, 4.6))
+    cut = 12.0                      # division between the two age ranges (years)
+    YOUNG, OLD = "#b07cc6", "#4f2582"
+    pct = lambda s: 100 * (np.exp(s) - 1)
+    fig = plt.figure(figsize=(W2, 4.9))
     gs = fig.add_gridspec(2, 6, height_ratios=[1, 1.05], hspace=0.55, wspace=1.3)
 
     # (a) eyes-closed alpha vs age under three rules
     w = wf[wf.a_ec > 0]
-    series = [("total power", wf.age, np.log10(wf.tot_ec), GREY),
-              ("λ = 0 (subtract)", w.age, np.log10(w.a_ec), C0),
-              ("λ = 1 (divide)", w.age, np.log10(w.a_ec / w.b_ec), C1)]
+    series = [("total power", wf.age, np.log(wf.tot_ec), GREY),
+              ("λ = 0 (subtract)", w.age, np.log(w.a_ec), C0),
+              ("λ = 1 (divide)", w.age, np.log(w.a_ec / w.b_ec), C1)]
+    box = dict(boxstyle="square,pad=0.15", fc="white", ec="none", alpha=0.8)
     for j, (lab, age, y, col) in enumerate(series):
         ax = fig.add_subplot(gs[0, 2 * j:2 * j + 2])
         age, y = age.to_numpy(), y.to_numpy()
-        ax.plot(age, y, "o", ms=1.2, color=col, alpha=0.25, mec="none")
+        ax.plot(age, y / np.log(10), "o", ms=1.2, color=col, alpha=0.25, mec="none")
+        ax.axvline(cut, color=INK2, lw=0.5, ls=":")
+        # straight line over all ages, and the spline trend
         b = np.polyfit(age, y, 1)
         xx = np.array([age.min(), age.max()])
-        ax.plot(xx, np.polyval(b, xx), color=INK, lw=1.2)
-        lo, hi = np.percentile(y, [1, 99])
-        ax.set_ylim(lo, hi)
+        ax.plot(xx, np.polyval(b, xx) / np.log(10), color=INK2, lw=0.8, ls="--")
+        xs, ys = spline_trend(age, y)
+        ax.plot(xs, ys / np.log(10), color=INK, lw=1.4)
+        lo, hi = np.percentile(y / np.log(10), [1, 99])
+        ax.set_ylim(lo - 0.14 * (hi - lo), hi + 0.3 * (hi - lo))
         ax.set_xlabel("Age (years)")
         if j == 0:
             ax.set_ylabel("Eyes-closed alpha (log$_{10}$)")
             panel(ax, "a")
         ax.set_title(lab, loc="left", color=col if j else INK2)
-        pct = 100 * (10 ** b[0] - 1)
-        ax.text(0.97, 0.04, f"{pct:+.1f}% per year", transform=ax.transAxes,
-                ha="right", color=INK)
+        # least-squares slope within each age range
+        for m, x0, ha, name in ((age < cut, cut - 0.4, "right", f"under {cut:.0f} y"),
+                                (age >= cut, cut + 0.4, "left", f"{cut:.0f} y and over")):
+            sl = np.polyfit(age[m], y[m], 1)[0]
+            ax.text(x0, 0.97, f"{name}\n{pct(sl):+.1f}% per year",
+                    transform=ax.get_xaxis_transform(), ha=ha, va="top", color=INK,
+                    fontsize=6, linespacing=1.15, bbox=box)
+        ax.text(0.98, 0.03, f"all ages {pct(b[0]):+.1f}% per year", transform=ax.transAxes,
+                ha="right", color=INK2, fontsize=6, bbox=box)
 
-    # (b) slope per year as a function of the assumed lambda
-    ax = fig.add_subplot(gs[1, 0:3])
-    grid = np.round(np.arange(0, 1.0001, 0.1), 2)
-    for w_, cond, col, ls, lab in ((wf, "ec", INK, "-", "eyes closed"),
-                                   (wf, "eo", INK2, "-", "eyes open"),
-                                   (wk, "ec", INK, "--", "eyes closed, knee+plateau")):
+    # (b) slope per year as a function of the assumed lambda: all ages (left)
+    # and the two age ranges, eyes closed (right)
+    grid = np.round(np.arange(-0.3, 1.5001, 0.1), 2)
+    lo_x, hi_x = -0.35, 1.55
+
+    def curve(ax, w_, cond, col, ls, lab, band=True, lw=1.2):
         w2 = w_[w_[f"a_{cond}"] > 0]
         x = w2.age.to_numpy()
         la, lb = np.log(w2[f"a_{cond}"].to_numpy()), np.log(w2[f"b_{cond}"].to_numpy())
-        out = np.array([slope_ci(x, la - g * lb, rng) for g in grid])
-        pc = 100 * (np.exp(out) - 1)
-        ax.plot(grid, pc[:, 0], color=col, ls=ls, lw=1.2, label=lab)
-        if ls == "-":
-            ax.fill_between(grid, pc[:, 1], pc[:, 2], color=col, alpha=0.12, lw=0)
-    ax.axhline(0, color=INK2, lw=0.6)
-    cr = pd.read_csv(os.path.join(RES, "hbn_age_alpha_crossover.csv"))
-    for cond, col in (("ec", INK), ("eo", INK2)):
-        r = cr[(cr["sample"] == "qc") & (cr.model == "fixed") & (cr.cond == cond)].iloc[0]
-        ax.plot([r.hdi_lo, min(r.hdi_hi, 1.0)], [0, 0], color=col, lw=3.5, alpha=0.5,
-                solid_capstyle="butt")
+        s, lo, hi = slope_curve(x, la, lb, grid, rng)
+        ax.plot(grid, pct(s), color=col, ls=ls, lw=lw, label=lab)
+        if band:
+            ax.fill_between(grid, pct(lo), pct(hi), color=col, alpha=0.12, lw=0)
+
+    def cross(ax, r, col, dx, dy, ha):
+        interval(ax, r.hdi_lo, r.hdi_hi, 0, lo_x, hi_x, col, ms=4.5, lw=3.5, alpha=0.5,
+                 solid_capstyle="butt")
         ax.plot(r.lam_star, 0, "o", color=col, ms=4)
-        ax.annotate(f"λ* = {r.lam_star:.2f}", (r.lam_star, 0),
-                    xytext=(-4 if cond == "ec" else -4, 6), textcoords="offset points",
-                    ha="right", color=col, fontsize=6,
+        ax.annotate(f"λ* = {r.lam_star:.2f}", (r.lam_star, 0), xytext=(dx, dy),
+                    textcoords="offset points", ha=ha, color=col, fontsize=6,
                     bbox=dict(boxstyle="square,pad=0.1", fc="white", ec="none"))
-    ax.set_xticks([0, 0.25, 0.5, 0.75, 1])
-    ax.set_xticklabels(["0\nIRASA-like", "0.25", "0.5", "0.75", "1\nspecparam-like"])
-    for t, col in ((ax.get_xticklabels()[0], C0), (ax.get_xticklabels()[-1], C1)):
-        t.set_color(col)
-    ax.set_xlabel("Assumed coupling λ")
-    ax.set_ylabel("Change in alpha with age (% per year)")
-    ax.legend(loc="lower right")
-    panel(ax, "b")
+
+    axl = fig.add_subplot(gs[1, 0:2])
+    axr = fig.add_subplot(gs[1, 2:4], sharey=axl)
+    curve(axl, wf, "ec", INK, "-", "eyes closed")
+    curve(axl, wf, "eo", INK2, "-", "eyes open")
+    curve(axl, wk, "ec", INK, "--", "eyes closed, knee+plateau", band=False)
+    cr = pd.read_csv(os.path.join(RES, "hbn_age_alpha_crossover.csv"))
+    for cond, col, where in (("ec", INK, (-4, 6, "right")), ("eo", INK2, (5, -11, "left"))):
+        r = cr[(cr["sample"] == "qc") & (cr.model == "fixed") & (cr.cond == cond)].iloc[0]
+        cross(axl, r, col, *where)
+    curve(axr, wf[wf.age < cut], "ec", YOUNG, "-", f"under {cut:.0f} y")
+    curve(axr, wf[wf.age >= cut], "ec", OLD, "-", f"{cut:.0f} y and over")
+    curve(axr, wf, "ec", INK, "-", "all ages", band=False, lw=0.7)
+    ph = pd.read_csv(os.path.join(RES, "hbn_age_alpha_phases.csv"))
+    ph = ph[(ph.model == "fixed") & (ph.cond == "ec") & (ph.cut == cut)].set_index("range")
+    cross(axr, ph.loc["younger"], YOUNG, -4, 6, "right")
+    cross(axr, ph.loc["older"], OLD, 5, -11, "left")
+    for ax, title, loc in ((axl, "All ages", "upper left"),
+                           (axr, "Eyes closed, by age range", "lower right")):
+        ax.axhline(0, color=INK2, lw=0.6)
+        ax.set_xlim(lo_x, hi_x)
+        ax.set_xticks([0, 0.5, 1, 1.5])
+        ax.set_xticklabels(["0\nIRASA-like", "0.5", "1\nspecparam-like", "1.5"])
+        for t, col in ((ax.get_xticklabels()[0], C0), (ax.get_xticklabels()[2], C1)):
+            t.set_color(col)
+        ax.set_xlabel("Assumed coupling λ")
+        ax.set_title(title, loc="left", color=INK2)
+        ax.legend(loc=loc, handlelength=1.6, borderaxespad=0.2)
+    axl.set_ylim(-19, 22)
+    axl.set_ylabel("Change in alpha with age (% per year)")
+    panel(axl, "b")
 
     # (c) age-resolved slopes, eyes closed
-    ax = fig.add_subplot(gs[1, 3:6])
+    ax = fig.add_subplot(gs[1, 4:6])
     sp = pd.read_csv(os.path.join(RES, "hbn_age_alpha_spline.csv"))
     for lam, col, lab in ((0.0, C0, "λ = 0"), (1.0, C1, "λ = 1")):
         g = sp[(sp.cond == "ec") & (sp.lam == lam)]
-        ax.plot(g.age, 100 * (np.exp(g.deriv) - 1), "-o", color=col, ms=2.5, lw=1.2,
-                label=lab)
-        ax.fill_between(g.age, 100 * (np.exp(g.lo) - 1), 100 * (np.exp(g.hi) - 1),
-                        color=col, alpha=0.15, lw=0)
+        ax.plot(g.age, pct(g.deriv), "-o", color=col, ms=2.5, lw=1.2, label=lab)
+        ax.fill_between(g.age, pct(g.lo), pct(g.hi), color=col, alpha=0.15, lw=0)
     ax.axhline(0, color=INK2, lw=0.6)
+    ax.axvline(cut, color=INK2, lw=0.5, ls=":")
     ax.set_xlabel("Age (years)")
     ax.set_ylabel("Eyes-closed alpha (% per year)")
     ax.legend(loc="lower left")
-    ax.set_title("Age-resolved slope (spline derivative)", loc="left", color=INK2)
+    ax.set_title("Slope by age (spline derivative)", loc="left", color=INK2)
     panel(ax, "c")
     save(fig, outdir, "fig4_age_reversal")
 
@@ -549,16 +615,19 @@ def fig_claims(outdir):
     ax.axvspan(0, 1, color=CH, alpha=0.12, lw=0)
     ax.text(0.5, len(S) - 1.0, "assumption\ndecides", ha="center", va="center", fontsize=5.5,
             color=INK2)
-    col = {"reverses": C1, "depends on lambda": INK, "holds under both": GREY,
-           "null under both": GREY}
+    # a claim is placed by the probability that its crossover lies in [0, 1]
+    place = lambda p: "inside" if p >= 0.95 else ("outside" if p <= 0.05 else "undetermined")
+    col = {"inside": C1, "undetermined": INK, "outside": GREY}
     for y, r in enumerate(S.itertuples()):
-        c = col.get(r.verdict, GREY)
-        x0, x1 = np.clip([r.hdi_lo, r.hdi_hi], lo_x, hi_x)
-        ax.plot([x0, x1], [y, y], color=c, lw=1)
+        cls = place(r.p_cross_in_01)
+        c = col[cls]
+        # an end is marked unless the point itself sits there as a triangle
+        interval(ax, r.hdi_lo, r.hdi_hi, y, lo_x, hi_x, c, lw=1,
+                 ends=(r.lam_star >= lo_x, r.lam_star <= hi_x))
         x = np.clip(r.lam_star, lo_x, hi_x)
         mk = ">" if r.lam_star > hi_x else ("<" if r.lam_star < lo_x else "o")
         ax.plot(x, y, mk, color=c, ms=4 if mk == "o" else 5,
-                mfc=c if r.verdict in ("reverses", "depends on lambda") else "white")
+                mfc="white" if cls == "outside" else c)
         if not getattr(r, "lam_star_bounded", True):
             # effect on ln b indistinguishable from 0: no finite crossover interval
             ax.text(x + (-0.12 if mk == ">" else 0.12), y, "unbounded", fontsize=5,
@@ -569,19 +638,33 @@ def fig_claims(outdir):
     ax.set_xlim(lo_x - 0.1, hi_x + 0.1)
     ax.set_ylim(len(S) - 0.4, -0.6)
     ax.set_xlabel("Crossover λ* (assumed λ at which the effect changes sign)")
-    ax.legend(handles=[Line2D([], [], color=C1, marker="o", ls="-", ms=4, label="reverses"),
-                       Line2D([], [], color=INK, marker="o", ls="-", ms=4, label="depends on λ"),
+    ax.legend(handles=[Line2D([], [], color=C1, marker="o", ls="-", ms=4, label="P(0 ≤ λ* ≤ 1) ≥ 0.95"),
+                       Line2D([], [], color=INK, marker="o", ls="-", ms=4, label="0.05 to 0.95"),
                        Line2D([], [], color=GREY, marker="o", mfc="white", ls="-", ms=4,
-                              label="holds under both, or null")],
-              loc="upper center", bbox_to_anchor=(0.4, -0.09), ncol=3, fontsize=6)
+                              label="≤ 0.05"),
+                       Line2D([], [], color=GREY, marker=">", ls="", ms=3.5, mec="none",
+                              label="continues past the axis")],
+              loc="upper center", bbox_to_anchor=(0.3, -0.09), ncol=4, fontsize=6,
+              columnspacing=1.2, handletextpad=0.5)
     fig.tight_layout()
     save(fig, outdir, "fig3_published_claims")
 
 
 def fig_estimates(outdir):
-    """Every attempt to estimate lambda, grouped by design."""
+    """Every attempt to estimate lambda, grouped by design.
+
+    Everything drawn comes from results/identification_summary.csv. A row
+    that carries lam_alt (the two-condition estimate with the instrument from
+    the other half of the recording) is drawn as a pair: both estimates with
+    their intervals, joined by a band that spans the range between them.
+    """
+    from matplotlib.lines import Line2D
     I = pd.read_csv(os.path.join(RES, "identification_summary.csv"))
-    fig, ax = plt.subplots(figsize=(W2 * 0.62, 4.6))
+    for c in ("lam_alt", "lo_alt", "hi_alt", "n_patients"):
+        if c not in I:
+            I[c] = np.nan
+    lo_x, hi_x, dy = -0.9, 2.2, 0.19
+    fig, ax = plt.subplots(figsize=(W2 * 0.62, 5.0))
     ax.axvline(0, color=C0, lw=0.8, ls="--")
     ax.axvline(1, color=C1, lw=0.8, ls="--")
     order = ["between conditions: eyes closed vs open",
@@ -595,15 +678,15 @@ def fig_estimates(outdir):
                order[1]: "ds003690, eyes open (within session)",
                order[2]: "Dortmund, eyes closed (within session)",
                order[3]: "Dortmund, eyes open (within session)",
-               order[4]: "Intracranial rest, 50 patients (within session)",
+               order[4]: "Intracranial rest (within session)",
                order[5]: "Test-retest (between sessions)",
                order[6]: "Propofol, baseline vs moderate (20 volunteers)"}
-    y, ticks, labels = 0, [], []
+    y, ticks, labels, paired = 0, [], [], False
     for g in order:
         G_ = I[I.design == g]
         if G_.empty:
             continue
-        ax.text(-0.75, y, headers[g], fontsize=6, color=INK, fontweight="bold", va="center",
+        ax.text(lo_x + 0.05, y, headers[g], fontsize=6, color=INK, fontweight="bold", va="center",
                 bbox=dict(fc="white", ec="none", pad=0.4))
         y += 1
         for r in G_.itertuples():
@@ -611,8 +694,20 @@ def fig_estimates(outdir):
                     .replace("after 2-h tasks", "after tasks")
                     .replace("covariates: ", "").replace("censor ", "")
                     .replace("flanks 3-6, 26-36", "flanks"))
-            ax.plot([r.lo, min(r.hi, 2.2)], [y, y], color=INK, lw=1)
-            ax.plot(r.lam, y, "o", color=INK, ms=3.5)
+            if np.isfinite(r.n_patients):
+                # channels of this row come from this many patients
+                spec = spec.replace(" channels", f" channels, {int(r.n_patients)} patients")
+            if np.isfinite(r.lam_alt):
+                paired = True
+                ax.plot([r.lam_alt, r.lam], [y, y], color=GREY, lw=5, alpha=0.4,
+                        solid_capstyle="butt", zorder=1)
+                interval(ax, r.lo, r.hi, y - dy, lo_x, hi_x, INK, ms=3, lw=1)
+                ax.plot(r.lam, y - dy, "o", color=INK, ms=3)
+                interval(ax, r.lo_alt, r.hi_alt, y + dy, lo_x, hi_x, INK, ms=3, lw=1)
+                ax.plot(r.lam_alt, y + dy, "o", color=INK, mfc="white", ms=3, mew=0.8)
+            else:
+                interval(ax, r.lo, r.hi, y, lo_x, hi_x, INK, lw=1)
+                ax.plot(r.lam, y, "o", color=INK, ms=3.5)
             ticks.append(y)
             labels.append(spec)
             y += 1
@@ -620,8 +715,19 @@ def fig_estimates(outdir):
     ax.set_yticks(ticks)
     ax.set_yticklabels(labels, fontsize=5.5)
     ax.set_ylim(y - 0.6, -0.8)
-    ax.set_xlim(-0.8, 2.2)
+    ax.set_xlim(lo_x, hi_x)
     ax.set_xlabel("Estimated λ (95% interval; 0 additive, 1 multiplicative)")
+    handles = [Line2D([], [], color=INK, marker=">", ls="-", lw=1, ms=3, mec="none",
+                      markevery=[1], label="interval continues past the axis")]
+    if paired:
+        handles = [Line2D([], [], color=INK, marker="o", ls="-", lw=1, ms=3,
+                          label="instrument from the half of the band total"),
+                   Line2D([], [], color=INK, marker="o", mfc="white", mew=0.8, ls="-", lw=1,
+                          ms=3, label="instrument from the half of the background"),
+                   Line2D([], [], color=GREY, lw=5, alpha=0.4, solid_capstyle="butt",
+                          label="range between the two")] + handles
+    ax.legend(handles=handles, loc="upper right", bbox_to_anchor=(1.0, -0.075), ncol=1,
+              fontsize=5.5, handlelength=2.2)
     fig.tight_layout()
     save(fig, outdir, "fig4_estimates_by_design")
 

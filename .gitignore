@@ -6,6 +6,7 @@ results/hbn_chan.csv
 # Per-subject derivatives carry subject IDs, age and sex: keep them local.
 results/hbn_roi.csv
 results/hbn_kp_fits.csv
+results/hbn_thirds_fits.csv
 results/hbn_ctrl_band.csv
 results/hbn_ctrl_window.csv
 results/hbn_topography*.npz

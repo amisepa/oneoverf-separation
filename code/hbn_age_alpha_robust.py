@@ -54,8 +54,16 @@ FULL_SEG = {"eo": 35, "ec": 85}
 
 
 def meta(psd_dir):
+    """Age, sex, release and segment counts per participant, from the PSD
+    files, or from results/hbn_roi.csv (which carries the same fields) when
+    the PSD directory is not available."""
+    cols = ["subject", "age", "sex", "release", "n_seg_eo", "n_seg_ec"]
+    files = glob.glob(os.path.join(psd_dir, "*.npz"))
+    if not files:
+        R = pd.read_csv(os.path.join(RES, "hbn_roi.csv"), usecols=cols)
+        return R.drop_duplicates("subject").set_index("subject")
     rows = []
-    for p in glob.glob(os.path.join(psd_dir, "*.npz")):
+    for p in files:
         d = np.load(p, allow_pickle=True)
         rows.append(dict(subject=str(d["subject"]), age=float(d["age"]),
                          sex=str(d["sex"]), release=str(d["release"]),

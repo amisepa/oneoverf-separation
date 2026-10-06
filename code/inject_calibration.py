@@ -7,14 +7,20 @@ coupling exponent is added in a band where they have no peak: a Gaussian
 centred at 33 Hz with s.d. 2 Hz (the grand-mean residual from a smooth
 background is flat over 27-39 Hz in both datasets, eyes open and closed).
 The band is analysed as the alpha band is: band total T over 31-35 Hz;
-background from the censored log-log fit plus Euler's constant over 2-45 Hz
-with 6-16 Hz and 27-39 Hz left out (ds003690's alpha analysis fits up to
-40 Hz, which would leave almost no bins above the band); three independent
+background from a power law fitted to the flanks of the 27-39 Hz gap only,
+23-27 and 39-45 Hz, and rescaled per participant to the mean spectrum
+interpolated across the gap (ap_models.flank_level); three independent
 estimates (ds003690: the three DPSS tapers, all six assignments through
 ds003690_lambda.stack; Dortmund: the band bins and two interleaved sets of
-fit bins, both assignments, as in dortmund_levels.arrays); and
+fit bins 3 bins apart, both assignments, as in dortmund_levels.arrays); and
 lambda_gmm.estimate_levels on the grid -1 to 3. Participants are those of the
 real alpha analysis (an alpha peak in the mean spectrum).
+--background power-law gives the earlier background instead: the censored
+log-log fit (ap_models.loglog_fit) over 2-45 Hz with 6-16 Hz and 27-39 Hz
+left out (ds003690's own power-law fit stops at 40 Hz, which would leave
+almost no bins above the band), with Dortmund's two sets of fit bins 2 bins
+apart. That fit also gives, with either background, the references 'own'
+and 'pooled', the synthetic spectra and the alpha peak heights below.
 
 Injected power in epoch j of participant i:
 
@@ -52,8 +58,8 @@ kappa cov(v, ln b) / var(ln b); both moments are taken against the
 instrument z = ln Bz, cov(v, z) / cov(ln B, z), whose noise is independent.
 
 Checks: the real alpha-band estimates are recomputed with the original
-functions, and the generalised fit functions used here are compared with the
-originals on the alpha configuration.
+functions and set beside those in results/, and the generalised fit functions
+used here are compared with the originals on the alpha configuration.
 
 Outputs (group level): results/inject_calibration_runs.csv (one row per
 run), results/inject_calibration_summary.csv (mean and s.d. over
@@ -63,6 +69,7 @@ analytic shift) and results/inject_calibration_checks.csv.
 Usage: python inject_calibration.py [--ds003690 DIR] [--dortmund DIR]
        [--conds ds003690,ec_pre,eo_pre,ec_post,eo_post] [--reps 5]
        [--nboot 50] [--workers 5] [--max-subjects N] [--seed 0] [--out DIR]
+       [--background flanks|power-law] [--tag SUFFIX]
 """
 import os
 
@@ -83,6 +90,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dortmund_levels as DV
 import ds003690_lambda as L3
 import lambda_gmm as G
+from ap_models import flank_bins, flank_level, loglog_fit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RES = os.path.join(HERE, "..", "results")
@@ -91,6 +99,7 @@ DATA = os.environ.get("EEG_DATA", "eeg_data")
 CF, SD, HALF = 33.0, 2.0, 2.0              # injected rhythm; analysis band CF +/- HALF
 FIT = (2.0, 45.0)
 CENSORS = ((6.0, 16.0), (27.0, 39.0))      # alpha, and the injected band
+FLANKS = ((23.0, 27.0), (39.0, 45.0))      # fit bins of the flank background
 GRID = DV.GRID
 SR = 250.0
 CONDS = ("ds003690", "ec_pre", "eo_pre", "ec_post", "eo_post")
@@ -113,18 +122,18 @@ def fit_mask(f, fit=FIT, censors=CENSORS):
 def ln_background(P, f, keep):
     """ds003690_lambda.fit_background with any set of fit bins."""
     X = np.column_stack([np.ones(keep.sum()), np.log(f[keep])])
-    Y = np.log(np.maximum(P[..., keep], 1e-30)).reshape(-1, keep.sum()).T
-    beta = np.linalg.lstsq(X, Y, rcond=None)[0]
-    beta[0] += L3.EULER
+    beta = loglog_fit(P[..., keep].reshape(-1, keep.sum()).T, X)
     lf = np.log(np.maximum(f, 1e-9))
     lnL = beta[0][:, None] + beta[1][:, None] * lf[None, :]
     return lnL.reshape(P.shape)
 
 
-def interleaved(f, keep):
-    """dortmund_levels.fit_sets with any set of fit bins."""
+def interleaved(f, keep, step=6):
+    """dortmund_levels.fit_sets with any set of fit bins: every step-th bin,
+    and the bins half-way between (step 6 for the flank background, 4 for the
+    power law)."""
     idx = np.where(keep)[0]
-    return idx[idx % 4 == 0], idx[idx % 4 == 2]
+    return idx[idx % step == 0], idx[idx % step == step // 2]
 
 
 def within(x, inv):
@@ -144,29 +153,35 @@ def check_alpha(cond, units, args):
     """Real alpha-band estimate through the original functions, and the
     generalised fit functions against the originals."""
     f = units[0]["f"]
+    fl = L3.FLANKS if args.background == "flanks" else None
+    tag = "" if fl else "_c16"
+    read = lambda name: pd.read_csv(name) if os.path.exists(name) else pd.DataFrame(
+        columns=["group", "covariates", "cond", "lam"])
     if cond == "ds003690":
-        rows = L3.band_arrays(units)
+        rows = L3.band_arrays(units, fl)
         T, B, Bz, grp, _ = L3.stack(rows, [])
-        lam = G.estimate_levels(T, B, Bz, grp, None)["lam"]
+        lam = G.estimate_levels(T, B, Bz, grp, None, grid=GRID)["lam"]
         inst = L3.instrument_strength(rows, [])
         keep0 = fit_mask(f, L3.FIT, (L3.CENSOR,))
         same = all(np.array_equal(ln_background(u["P"], f, keep0), L3.fit_background(u["P"], f))
                    for u in units[:5])
-        ref = pd.read_csv(os.path.join(RES, "ds003690_lambda.csv")).query(
-            "group == 'all' and covariates == 'none'")["lam"].iloc[0]
+        ref = read(os.path.join(RES, f"ds003690_lambda{tag}.csv")).query(
+            "group == 'all' and covariates == 'none'")["lam"]
     else:
-        T, B, Bz, grp, _ = DV.arrays(units, False)
+        T, B, Bz, grp, _ = DV.arrays(units, False, fl)
         lam = G.estimate_levels(T, B, Bz, grp, None, grid=GRID)["lam"]
         # first half of each participant's rows = first assignment, as in dortmund_levels.run
         inst = float(np.nanmean([np.corrcoef(np.log(B[grp == s][: (grp == s).sum() // 2]),
                                              np.log(Bz[grp == s][: (grp == s).sum() // 2]))[0, 1]
                                  for s in np.unique(grp)]))
         keep0 = fit_mask(f, DV.FIT, (DV.CENSOR,))
-        same = all(np.array_equal(a, b) for a, b in zip(interleaved(f, keep0), DV.fit_sets(f)))
-        c16 = pd.read_csv(os.path.join(RES, "dortmund_levels_c16.csv"))
-        ref = c16.loc[c16.cond == cond, "lam"].iloc[0] if (c16.cond == cond).any() else np.nan
-    return dict(alpha_lam=lam, alpha_lam_published=ref, alpha_instrument_r=inst,
-                fit_functions_identical=bool(same))
+        same = all(np.array_equal(a, b) for a, b in zip(
+            interleaved(f, keep0, 4) + interleaved(f, flank_bins(f, L3.FLANKS)),
+            DV.fit_sets(f) + DV.fit_sets(f, L3.FLANKS)))
+        ref = read(os.path.join(RES, f"dortmund_levels{tag}.csv")).query(
+            "cond == @cond and covariates == False")["lam"]
+    return dict(alpha_lam=lam, alpha_lam_published=ref.iloc[0] if len(ref) else np.nan,
+                alpha_instrument_r=inst, fit_functions_identical=bool(same))
 
 
 def prepare(cond, args):
@@ -180,7 +195,7 @@ def prepare(cond, args):
     f = units[0]["f"]
     keep = fit_mask(f)
     band = (f >= CF - HALF) & (f <= CF + HALF)
-    s0, s2 = interleaved(f, keep)
+    s0, s2 = interleaved(f, keep, 4)
     a0, _ = DV.fit_sets(f)
     out = []
     for u in units:
@@ -207,7 +222,9 @@ def prepare(cond, args):
         # relative alpha peak height as in the existing simulate() functions
         out.append(dict(subject=u["subject"], P=P, iaf=cf, h_alpha=max(Pm[i] / Lcf - 1, 0.1),
                         ref_in=ref_in, ref_pool=ref_pool, ref_own=ref_own, t_alpha=t_alpha))
-    D = dict(ds=ds, cond=cond, f=f, keep=keep, band=band, s0=s0, s2=s2, units=out)
+    D = dict(ds=ds, cond=cond, f=f, keep=keep, band=band, s0=s0, s2=s2, units=out,
+             flanks=FLANKS if args.background == "flanks" else None,
+             sets=interleaved(f, flank_bins(f, FLANKS)))
     chk.update(n_units=len(out), n_epochs=int(sum(u["P"].shape[0] for u in out)),
                iaf_median=float(np.median([u["iaf"] for u in out])),
                h_alpha_median=float(np.median([u["h_alpha"] for u in out])),
@@ -262,18 +279,26 @@ def amplitude(ref, lam, h, eps, v=None, kappa=0.0):
 def analyse(D, spectra):
     """Band T, B, Bz and participant labels, stacked as the original scripts
     stack them, plus the instrument strength."""
-    f, keep, band = D["f"], D["keep"], D["band"]
+    f, keep, band, fl = D["f"], D["keep"], D["band"], D["flanks"]
     if D["ds"]:
         rows = []
+        bins = np.where(flank_bins(f, FLANKS))[0]
         for u, P in zip(D["units"], spectra):
-            L = np.exp(ln_background(P, f, keep))
-            rows.append(dict(subject=u["subject"], T=P[..., band].mean(-1), B=L[..., band].mean(-1),
+            if fl is None:
+                B = np.exp(ln_background(P, f, keep))[..., band].mean(-1)
+            else:
+                B = np.column_stack([flank_level(P[:, a], f, bins, band, fl, P.mean(axis=(0, 1)))
+                                     for a in range(3)])
+            rows.append(dict(subject=u["subject"], T=P[..., band].mean(-1), B=B,
                              cov=np.zeros((P.shape[0], 4))))
         T, B, Bz, grp, _ = L3.stack(rows, [])
         return T, B, Bz, grp, L3.instrument_strength(rows, []), 6
     T, B, Bz, grp, rs = [], [], [], [], []
     for u, P in zip(D["units"], spectra):
-        Lb = [np.exp(DV.lnL(P, f, s))[:, band].mean(1) for s in (D["s0"], D["s2"])]
+        if fl is None:
+            Lb = [np.exp(DV.lnL(P, f, s))[:, band].mean(1) for s in (D["s0"], D["s2"])]
+        else:
+            Lb = [flank_level(P, f, s, band, fl) for s in D["sets"]]
         t = P[:, band].mean(1)
         for bi, zi in ((0, 1), (1, 0)):
             T.append(t); B.append(Lb[bi]); Bz.append(Lb[zi])
@@ -519,6 +544,9 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default=RES, help="output directory")
     ap.add_argument("--tag", default="", help="suffix for the output files")
+    ap.add_argument("--background", choices=("flanks", "power-law"), default="flanks",
+                    help="flanks: power law through 23-27 and 39-45 Hz, rescaled to the mean "
+                         "spectrum; power-law: one fit over 2-45 Hz without 6-16 and 27-39 Hz")
     a = ap.parse_args()
     conds = a.conds.split(",")
     runs, drive, checks = [], [], []
