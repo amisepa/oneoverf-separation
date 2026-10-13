@@ -150,9 +150,9 @@ def rebuild_breadth_rows():
     base = B[(B.t >= onset - 60) & (B.t < onset - 5)].groupby("patient").mean(numeric_only=True)
     pre = B[(B.t >= -60.0) & (B.t < -10.0)].groupby("patient").mean(numeric_only=True)
     d = pre.join(base, rsuffix="_0", how="inner")
-    for band, claim in (("delta", "delta does not rise before loss of consciousness"),
-                        ("alpha", "alpha rises before loss of consciousness"),
-                        ("beta", "beta rises before loss of consciousness")):
+    for band, claim in (("delta", "delta does not rise before loss of responsiveness"),
+                        ("alpha", "alpha rises before loss of responsiveness"),
+                        ("beta", "beta rises before loss of responsiveness")):
         with np.errstate(invalid="ignore", divide="ignore"):
             dA = np.log(d[f"{band}_a"].where(d[f"{band}_a"] > 0)) - \
                 np.log(d[f"{band}_a_0"].where(d[f"{band}_a_0"] > 0))

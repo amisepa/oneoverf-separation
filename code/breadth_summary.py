@@ -58,9 +58,9 @@ CHENNU = (("drowsy", "anteriorization (frontal - posterior)",
            "alpha shifts frontally in drowsy participants"),
           ("all", "frontal alpha", "frontal alpha rises with propofol sedation"),
           ("all", "posterior alpha", "posterior alpha falls with propofol sedation"))
-BRAKE = (("delta", "delta does not rise before loss of consciousness"),
-         ("alpha", "alpha rises before loss of consciousness"),
-         ("beta", "beta rises before loss of consciousness"))
+BRAKE = (("delta", "delta does not rise before loss of responsiveness"),
+         ("alpha", "alpha rises before loss of responsiveness"),
+         ("beta", "beta rises before loss of responsiveness"))
 
 
 def row(domain, claim, source, dataset, n, r, unit):
