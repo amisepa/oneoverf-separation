@@ -16,8 +16,18 @@ results/chennu_spectra.csv
 results/brake_bins.csv
 results/srm_bandpower.csv
 results/hbn_scalp_distance.csv
+results/hbn_lambda_spectrum_fits.csv
+results/hbn_age_crossover_channels_fits_*.npz
 # Python bytecode
 __pycache__/
 *.pyc
 # Manuscript drafts are kept outside the repository.
 paper/
+# Organoid spectra and spiking are regenerable from Zenodo 4751759 via
+# code/trujillo_extract_psd.py and code/trujillo_extract_events.py.
+results/trujillo_psd/
+results/trujillo_events/
+results/trujillo_psd_drugs/
+results/trujillo_events_drugs/
+# MEG spectra are regenerable from OpenNeuro ds005752 via code/meg_nimh_extract_psd.py.
+results/meg_nimh_psd/
