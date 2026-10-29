@@ -613,8 +613,21 @@ def fig_claims(outdir):
     fig, ax = plt.subplots(figsize=(W2 * 0.72, 4.0))
     lo_x, hi_x = -1.0, 4.0
     ax.axvspan(0, 1, color=CH, alpha=0.12, lw=0)
+    # 1-2: the wider range that applies if lambda can exceed 1 (Fig. 5)
+    ax.axvspan(1, 2, color=CH, alpha=0.05, lw=0)
     ax.text(0.5, len(S) - 1.0, "assumption\ndecides", ha="center", va="center", fontsize=5.5,
             color=INK2)
+    ax.text(1.5, len(S) - 1.0, "if λ > 1\nis plausible", ha="center", va="center", fontsize=5.5,
+            color=INK2)
+    # probabilities that the crossover lies in [0, 1] and in [0, 2], right of the axis
+    tr = ax.get_yaxis_transform()
+    for x, h in ((1.03, "P[0, 1]"), (1.13, "P[0, 2]")):
+        ax.text(x, -0.9, h, transform=tr, fontsize=5.5, color=INK2, ha="left", va="center",
+                clip_on=False)
+    for y, r in enumerate(S.itertuples()):
+        for x, p in ((1.03, r.p_cross_in_01), (1.13, r.p_cross_in_02)):
+            ax.text(x, y, f"{p:.2f}", transform=tr, fontsize=5.5, color=INK, ha="left",
+                    va="center", clip_on=False)
     # a claim is placed by the probability that its crossover lies in [0, 1]
     place = lambda p: "inside" if p >= 0.95 else ("outside" if p <= 0.05 else "undetermined")
     col = {"inside": C1, "undetermined": INK, "outside": GREY}
@@ -653,13 +666,12 @@ def fig_claims(outdir):
 def fig_estimates(outdir):
     """Every attempt to estimate lambda, grouped by design.
 
-    Everything drawn comes from results/identification_summary.csv. A row
-    that carries lam_alt (the two-condition estimate with the instrument from
-    the other half of the recording) is drawn as a pair: both estimates with
-    their intervals, joined by a band that spans the range between them.
-    Below each pair, the estimate from three disjoint thirds
-    (results/hbn_lambda_gmm_thirds.csv): its interval and every root of the
-    moment condition, none of them singled out.
+    Everything drawn comes from results/identification_summary.csv, except the
+    HBN eyes-closed vs eyes-open rows, which show only the estimate from three
+    disjoint thirds (results/hbn_lambda_gmm_thirds.csv): its interval and every
+    root of the moment condition, none of them singled out. The half-split
+    estimates of those rows are no longer drawn, nor ds003690 (which failed its
+    control band). Right of the axis, each estimate's status.
     """
     from matplotlib.lines import Line2D
     I = pd.read_csv(os.path.join(RES, "identification_summary.csv"))
@@ -678,20 +690,34 @@ def fig_estimates(outdir):
     ax.axvline(0, color=C0, lw=0.8, ls="--")
     ax.axvline(1, color=C1, lw=0.8, ls="--")
     order = ["between conditions: eyes closed vs open",
-             "within session: epoch fluctuations, eyes open",
              "within session: segment fluctuations, eyes closed",
              "within session: segment fluctuations, eyes open",
              "within session: epoch fluctuations, intracranial",
              "between sessions: test-retest",
              "between doses: propofol baseline vs moderate"]
     headers = {order[0]: "HBN, eyes closed vs open (2,396 children)",
-               order[1]: "ds003690, eyes open (within session)",
-               order[2]: "Dortmund, eyes closed (within session)",
-               order[3]: "Dortmund, eyes open (within session)",
-               order[4]: "Intracranial rest (within session)",
-               order[5]: "Test-retest (between sessions)",
-               order[6]: "Propofol, baseline vs moderate (20 volunteers)"}
-    y, ticks, labels, paired, thirds = 0, [], [], False, False
+               order[1]: "Dortmund, eyes closed (within session)",
+               order[2]: "Dortmund, eyes open (within session)",
+               order[3]: "Intracranial rest (within session)",
+               order[4]: "Test-retest (between sessions)",
+               order[5]: "Propofol, baseline vs moderate (20 volunteers)"}
+
+    def status(r):
+        """What simulation says about this estimate (Supplementary Note 9)."""
+        if r.design.startswith("between conditions"):
+            return "not identified"           # thirds: several roots, intervals -1 to 2
+        if "eyes closed" in r.design:
+            return "reads too high"           # calibration: +0.15 to +0.57 at this peak height
+        if r.design.startswith("within session"):
+            return "recovered in simulation"  # Dortmund eyes open, intracranial
+        if r.hi - r.lo > 2:
+            return "too imprecise"
+        return "not calibrated"
+
+    tr = ax.get_yaxis_transform()
+    ax.text(1.02, -0.8, "status", transform=tr, fontsize=5.5, color=INK2, ha="left",
+            va="center", clip_on=False)
+    y, ticks, labels, thirds = 0, [], [], False
     for g in order:
         G_ = I[I.design == g]
         if G_.empty:
@@ -708,30 +734,24 @@ def fig_estimates(outdir):
                 # channels of this row come from this many patients
                 spec = spec.replace(" channels", f" channels, {int(r.n_patients)} patients")
             if np.isfinite(r.lam_alt):
-                paired = True
+                # HBN: only the thirds estimate, which removes the half-split biases
                 t3 = T3.get(r.spec) if len(T3) else None
-                # with thirds the row holds three lines, otherwise two
-                ya, yb = (y - dy, y) if t3 is not None else (y - 0.19, y + 0.19)
-                ax.plot([r.lam_alt, r.lam], [(ya + yb) / 2] * 2, color=GREY, lw=5, alpha=0.4,
-                        solid_capstyle="butt", zorder=1)
-                interval(ax, r.lo, r.hi, ya, lo_x, hi_x, INK, ms=3, lw=1)
-                ax.plot(r.lam, ya, "o", color=INK, ms=3)
-                interval(ax, r.lo_alt, r.hi_alt, yb, lo_x, hi_x, INK, ms=3, lw=1)
-                ax.plot(r.lam_alt, yb, "o", color=INK, mfc="white", ms=3, mew=0.8)
-                if t3 is not None:
-                    thirds = True
-                    interval(ax, t3.lo, t3.hi, y + dy, lo_x, hi_x, C3, ms=3, lw=1)
-                    roots = [float(v) for v in str(t3.roots).split()]
-                    ax.plot([v for v in roots if lo_x <= v <= hi_x],
-                            [y + dy] * sum(lo_x <= v <= hi_x for v in roots),
-                            "D", color=C3, mfc="white", ms=2.6, mew=0.8, ls="")
+                if t3 is None:
+                    continue
+                thirds = True
+                interval(ax, t3.lo, t3.hi, y, lo_x, hi_x, C3, ms=3, lw=1)
+                roots = [float(v) for v in str(t3.roots).split()]
+                ax.plot([v for v in roots if lo_x <= v <= hi_x],
+                        [y] * sum(lo_x <= v <= hi_x for v in roots),
+                        "D", color=C3, mfc="white", ms=2.6, mew=0.8, ls="")
             else:
                 interval(ax, r.lo, r.hi, y, lo_x, hi_x, INK, lw=1)
                 ax.plot(r.lam, y, "o", color=INK, ms=3.5)
+            ax.text(1.02, y, status(r), transform=tr, fontsize=5.5, color=INK, ha="left",
+                    va="center", clip_on=False)
             ticks.append(y)
             labels.append(spec)
-            # a row that carries three lines needs more room
-            y += 1.5 if np.isfinite(r.lam_alt) and len(T3) and r.spec in T3 else 1
+            y += 1
         y += 0.4
     ax.set_yticks(ticks)
     ax.set_yticklabels(labels, fontsize=5.5)
@@ -740,16 +760,9 @@ def fig_estimates(outdir):
     ax.set_xlabel("Estimated λ (95% interval; 0 additive, 1 multiplicative)")
     handles = [Line2D([], [], color=INK, marker=">", ls="-", lw=1, ms=3, mec="none",
                       markevery=[1], label="interval continues past the axis")]
-    if paired:
-        handles = [Line2D([], [], color=INK, marker="o", ls="-", lw=1, ms=3,
-                          label="instrument from the half of the band total"),
-                   Line2D([], [], color=INK, marker="o", mfc="white", mew=0.8, ls="-", lw=1,
-                          ms=3, label="instrument from the half of the background"),
-                   Line2D([], [], color=GREY, lw=5, alpha=0.4, solid_capstyle="butt",
-                          label="range between the two")] + handles
     if thirds:
-        handles.insert(3, Line2D([], [], color=C3, marker="D", mfc="white", mew=0.8, ls="-", lw=1,
-                                 ms=2.6, label="three disjoint thirds: interval and every root"))
+        handles.insert(0, Line2D([], [], color=C3, marker="D", mfc="white", mew=0.8, ls="-", lw=1,
+                                 ms=2.6, label="three interleaved thirds: interval and every root"))
     ax.legend(handles=handles, loc="upper right", bbox_to_anchor=(1.0, -0.075), ncol=1,
               fontsize=5.5, handlelength=2.2)
     fig.tight_layout()
