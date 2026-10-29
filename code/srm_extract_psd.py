@@ -26,6 +26,8 @@ import psd_utils as U
 OUT = os.environ.get("SRM_OUT", "srm_psd")
 GROUPS = {"post": ["O1", "Oz", "O2", "PO3", "POz", "PO4"]}
 SKIP_SEC = 2.0
+# cleaned recordings (clean_adult.py: <EDF stem>.set) read instead of the EDFs
+CLEANED = os.environ.get("SRM_CLEANED", "")
 
 
 def read_edf(path):
@@ -59,7 +61,12 @@ def one(args):
     if os.path.exists(outfile):
         return sub, ses, "cached"
     try:
-        raw = read_edf(path)
+        if CLEANED:
+            import mne
+            raw = mne.io.read_raw_eeglab(os.path.join(CLEANED, os.path.basename(path)[:-4] + ".set"),
+                                         preload=True, verbose="ERROR")
+        else:
+            raw = read_edf(path)
         raw.pick("eeg")
         x, srate, names = U.preprocess(raw)
         a = int(SKIP_SEC * srate)

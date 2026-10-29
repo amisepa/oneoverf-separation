@@ -36,6 +36,15 @@ GROUPS = {"post": ["O1", "Oz", "O2", "PO3", "POz", "PO4"],
           "temp": ["T7", "T8", "FT7", "FT8", "TP7", "TP8"]}
 RECS = [("ec", "EyesClosed"), ("eo", "EyesOpen")]
 SKIP_SEC = 2.0
+# cleaned recordings (clean_adult.py: <EDF stem>.set, the FCz reference
+# restored) read instead of the downloads; FCz is dropped again so the
+# average reference is the uncleaned one's
+CLEANED = os.environ.get("DORTMUND_CLEANED", "")
+REF = "FCz"
+
+
+def file_name(sub, ses, task, acq):
+    return f"{sub}_ses-{ses}_task-{task}_acq-{acq}_eeg.edf"
 
 
 def fetch(url, dest, tries=4):
@@ -77,16 +86,25 @@ def one(args):
     freqs = ch = None
     for acq in ("pre", "post"):
         for key, task in RECS:
-            name = f"{sub}_ses-{ses}_task-{task}_acq-{acq}_eeg.edf"
-            url = f"{S3}/{sub}/ses-{ses}/eeg/{name}"
-            path = os.path.join(TMP, name)
-            if not fetch(url, path):
-                status.append(f"{key}_{acq}:missing")
-                continue
+            name = file_name(sub, ses, task, acq)
+            if CLEANED:
+                path = os.path.join(CLEANED, name[:-4] + ".set")
+                if not os.path.exists(path):
+                    status.append(f"{key}_{acq}:missing")
+                    continue
+            else:
+                path = os.path.join(TMP, name)
+                if not fetch(f"{S3}/{sub}/ses-{ses}/eeg/{name}", path):
+                    status.append(f"{key}_{acq}:missing")
+                    continue
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    raw = mne.io.read_raw_edf(path, preload=True, verbose="ERROR")
+                    if CLEANED:
+                        raw = mne.io.read_raw_eeglab(path, preload=True, verbose="ERROR")
+                        raw.drop_channels([REF])
+                    else:
+                        raw = mne.io.read_raw_edf(path, preload=True, verbose="ERROR")
                     raw.pick("eeg")
                 x, srate, names = U.preprocess(raw)
                 a = int(SKIP_SEC * srate)
@@ -103,10 +121,11 @@ def one(args):
             except Exception as e:
                 status.append(f"{key}_{acq}:error {type(e).__name__}")
             finally:
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
+                if not CLEANED:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
     if freqs is None:
         return sub, ses, ";".join(status)
     np.savez_compressed(outfile, freqs=freqs.astype(np.float32), ch_names=np.array(ch),

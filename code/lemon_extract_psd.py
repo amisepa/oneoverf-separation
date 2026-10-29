@@ -41,6 +41,11 @@ GROUPS = {"post": ["O1", "Oz", "O2", "PO3", "POz", "PO4"],
           "veog": ["VEOG"]}
 CODES = {"ec": "S210", "eo": "S200"}
 SKIP_SEC = 2.0
+# cleaned recordings (clean_adult.py: <sub>.set, the FCz reference restored)
+# read instead of the downloads; FCz is dropped again so the average
+# reference is the uncleaned one's
+CLEANED = os.environ.get("LEMON_CLEANED", "")
+REF = "FCz"
 
 
 def fetch(url, dest, tries=4):
@@ -102,6 +107,26 @@ def spans(raw, code, srate):
             for b in blocks if len(b) >= 5]
 
 
+def stage(sub, dest):
+    """Fetch the BrainVision files to dest/<sub>.vhdr/.vmrk/.eeg; returns the
+    paths, or a 'missing <ext>' status."""
+    stem = f"{BASE}/{PREFIX}{sub}/RSEEG/{sub}"
+    paths = {e: os.path.join(dest, f"{sub}.{e}") for e in ("vhdr", "vmrk", "eeg")}
+    for e, p in paths.items():
+        if not fetch(f"{stem}.{e}", p):
+            for q in paths.values():
+                if os.path.exists(q):
+                    os.remove(q)
+            return f"missing {e}"
+    # the headers name the original files; point them at the local ones
+    for e in ("vhdr", "vmrk"):
+        txt = open(paths[e], encoding="latin-1").read()
+        txt = re.sub(r"^DataFile=.*$", f"DataFile={sub}.eeg", txt, flags=re.M)
+        txt = re.sub(r"^MarkerFile=.*$", f"MarkerFile={sub}.vmrk", txt, flags=re.M)
+        open(paths[e], "w", encoding="latin-1").write(txt)
+    return paths
+
+
 def one(args):
     sub, meta = args
     outfile = os.path.join(OUT, f"{sub}.npz")
@@ -109,20 +134,20 @@ def one(args):
         return sub, "cached"
     os.makedirs(OUT, exist_ok=True)
     os.makedirs(TMP, exist_ok=True)
-    stem = f"{BASE}/{PREFIX}{sub}/RSEEG/{sub}"
-    paths = {e: os.path.join(TMP, f"{sub}.{e}") for e in ("vhdr", "vmrk", "eeg")}
+    paths = {}
     try:
-        for e, p in paths.items():
-            if not fetch(f"{stem}.{e}", p):
-                return sub, f"missing {e}"
-        # the headers name the original files; point them at the local ones
-        for e in ("vhdr", "vmrk"):
-            txt = open(paths[e], encoding="latin-1").read()
-            txt = re.sub(r"^DataFile=.*$", f"DataFile={sub}.eeg", txt, flags=re.M)
-            txt = re.sub(r"^MarkerFile=.*$", f"MarkerFile={sub}.vmrk", txt, flags=re.M)
-            open(paths[e], "w", encoding="latin-1").write(txt)
         import mne
-        raw = mne.io.read_raw_brainvision(paths["vhdr"], preload=True, verbose="ERROR")
+        if CLEANED:
+            path = os.path.join(CLEANED, f"{sub}.set")
+            if not os.path.exists(path):
+                return sub, "missing set"
+            raw = mne.io.read_raw_eeglab(path, preload=True, verbose="ERROR")
+            raw.drop_channels([REF])
+        else:
+            paths = stage(sub, TMP)
+            if isinstance(paths, str):
+                return sub, paths
+            raw = mne.io.read_raw_brainvision(paths["vhdr"], preload=True, verbose="ERROR")
         if "VEOG" in raw.ch_names:
             raw.set_channel_types({"VEOG": "eog"})
         raw.pick(["eeg", "eog"])
@@ -153,7 +178,7 @@ def one(args):
     except Exception as e:
         return sub, f"error {type(e).__name__}: {e}"
     finally:
-        for p in paths.values():
+        for p in (paths.values() if isinstance(paths, dict) else ()):
             try:
                 os.remove(p)
             except OSError:

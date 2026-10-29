@@ -10,7 +10,11 @@ splits, three interleaved thirds of the segments (kept segment index mod 3)
 and per-block PSDs. For the posterior and temporal channels the spectrum of
 every single segment is stored as well, with the rejection statistic and the
 block of each segment, so that any other split or rejection rule can be
-formed without the recordings.
+formed without the recordings. For the same channels, IRASA (code/irasa.py)
+is run on the same segments: <cond>_irasa (seg_names x freqs) is the fractal
+spectrum, <cond>_irasa_h (factor, up/down, channel, freq) the mean resampled
+spectra per factor in irasa_hset, irasa_status "ok" or the error (an IRASA
+failure leaves the Welch spectra intact). Valid at about 0.8-52 Hz.
 
 One .npz is written per subject (under a temporary name first, so an
 interrupted run leaves no partial file); subjects already done are skipped,
@@ -29,6 +33,8 @@ Usage:
                               [--passes 3] [--subjects FILE]
   --subjects  text file with one "dataset subject" pair per line; only these
               are extracted
+With HBN_REDO_IRASA=1, a subject whose file has no IRASA spectra is extracted
+again; the old file is kept as <name>.npz.old.
 """
 import argparse
 import csv
@@ -50,6 +56,10 @@ S3 = "https://s3.amazonaws.com/openneuro.org"
 GRAPHQL = "https://openneuro.org/crn/graphql"
 OUT = os.environ.get("HBN_OUT", "hbn_psd")
 TMP = os.environ.get("HBN_TMP", "hbn_tmp")
+# directory of locally cleaned recordings, <ds>_<sub>_clean.set
+# (hbn_clean_check.py); when set, recordings are read from it, not fetched
+LOCAL_SET = os.environ.get("HBN_LOCAL_SET", "")
+REDO_IRASA = os.environ.get("HBN_REDO_IRASA", "") == "1"
 
 # analysis settings
 SRATE_TARGET = 250.0      # decimate; we only fit 2-45 Hz
@@ -64,6 +74,7 @@ ROI = ["E70", "E75", "E83", "E62", "E65", "E90"]
 # temporal cluster (muscle-sensitive flank band of hbn_topography_flanks.py)
 TEMPORAL = ["E116", "E117", "E111", "E123", "E34", "E35", "E40", "E109"]
 TRIES = 6                 # attempts per request, waiting 2, 4, ... 32 s between
+SERIAL_MAX = 5000         # up to this many subjects (hbn_clean_all batches), no pool
 
 
 class Transient(IOError):
@@ -254,12 +265,17 @@ def blocks_psd(raw_data, srate, spans, nper, noverlap, roi_ix=None, seg_ix=None)
     return P.mean(0), P[0::2].mean(0), P[1::2].mean(0), (f, P.shape[0]), blocks, extra
 
 
+def has_irasa(path):
+    with np.load(path) as d:
+        return "ec_irasa" in d.files
+
+
 def process(args):
     ds, sub, meta = args
     os.makedirs(OUT, exist_ok=True)
     os.makedirs(TMP, exist_ok=True)
     outfile = os.path.join(OUT, f"{ds}_{sub}.npz")
-    if os.path.exists(outfile):
+    if os.path.exists(outfile) and not (REDO_IRASA and not has_irasa(outfile)):
         return sub, "cached"
 
     base = f"{S3}/{ds}/{sub}/eeg/{sub}_task-RestingState"
@@ -277,7 +293,11 @@ def process(args):
                 return sub, "fetch-failed: events listed in the snapshot but not served"
         if not ev:
             return sub, "empty-events"
-        if not fetch(base + "_eeg.set", setf):
+        if LOCAL_SET:
+            setf = os.path.join(LOCAL_SET, f"{ds}_{sub}_clean.set")
+            if not os.path.exists(setf):
+                return sub, "no-local-set"
+        elif not fetch(base + "_eeg.set", setf):
             url = snapshot_url(ds, sub, f"{sub}_task-RestingState_eeg.set")
             if not url:
                 return sub, "no-set-file"
@@ -348,12 +368,28 @@ def process(args):
             for k in ("seg_block", "seg_ratio", "seg_used"):
                 more[f"{name}_{k}"] = x[k]
 
+        # IRASA on the segments that entered the means, for the seg channels.
+        # Imported here, not at the top: scipy.signal slows the start of the
+        # pool's workers, and on a loaded machine a slow start breaks the
+        # pool on Windows (WinError 6 in the worker's first queue read)
+        ir = dict(irasa_status="ok")
+        try:
+            from irasa import HSET, irasa
+            ir["irasa_hset"] = HSET
+            for name, sp in (("eo", eo), ("ec", ec)):
+                frac, hspec = irasa(X[seg_ix], srate, sp, nper, nov,
+                                    res[name][5]["seg_used"], f[keep])
+                ir[f"{name}_irasa"] = frac.astype(np.float32)
+                ir[f"{name}_irasa_h"] = hspec.astype(np.float32)
+        except Exception as e:
+            ir = dict(irasa_status=f"error: {type(e).__name__}: {e}")
+
         # written under a temporary name and renamed, so that a file with the
         # final name is always complete
         part = outfile + ".part"
         with open(part, "wb") as fh:
             np.savez_compressed(
-                fh, seg_names=np.array(seg_names), **more,
+                fh, seg_names=np.array(seg_names), **more, **ir,
                 freqs=f[keep].astype(np.float32),
                 ch_names=np.array(ch),
                 eo=res["eo"][0][:, keep], eo_odd=res["eo"][1][:, keep],
@@ -369,12 +405,15 @@ def process(args):
                 srate=srate, age=meta.get("age", np.nan), sex=meta.get("sex", ""),
                 release=meta.get("release", ""), subject=sub, dataset=ds,
             )
+        if os.path.exists(outfile):                     # HBN_REDO_IRASA
+            os.replace(outfile, outfile + ".old")
         os.replace(part, outfile)
         return sub, "ok"
     except Exception as e:
         return sub, f"error: {type(e).__name__}: {e}"
     finally:
-        for p in (setf, setf.replace(".set", ".fdt"), outfile + ".part"):
+        for p in ((outfile + ".part",) if LOCAL_SET else
+                  (setf, setf.replace(".set", ".fdt"), outfile + ".part")):
             try:
                 os.remove(p)
             except OSError:
@@ -399,6 +438,26 @@ def table(queued, last):
         lines.append(f"  {ds:10s} {len(st):6d} {done:6d} {len(st) - done - fail - pend:6d} "
                      f"{fail:6d} {pend:7d}")
     return "\n".join(lines)
+
+
+def run_jobs(todo, workers):
+    """Yield (job, status) for every job. Small batches (those of
+    hbn_clean_all.py, a backlog included) run in this process: on a loaded
+    Windows machine a slow worker start breaks the pool (WinError 6 in the
+    worker's first queue read) or leaves the parent spinning on a dead worker
+    (2026-10-28: 13 broken pools in one day, then a hang of the cleaning run)."""
+    if workers <= 1 or len(todo) <= SERIAL_MAX:
+        for j in todo:
+            yield j, process(j)[1]
+        return
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(process, j): j for j in todo}
+        for fu in as_completed(futs):
+            try:
+                status = fu.result()[1]
+            except Exception as e:              # a worker process died
+                status = f"error: worker {type(e).__name__}: {e}"
+            yield futs[fu], status
 
 
 def main():
@@ -449,24 +508,17 @@ def main():
             time.sleep(60)
         counts = {}
         done = 0
-        with ProcessPoolExecutor(max_workers=a.workers) as ex:
-            futs = {ex.submit(process, j): j for j in todo}
-            for fu in as_completed(futs):
-                ds, sub = futs[fu][:2]
-                try:
-                    status = fu.result()[1]
-                except Exception as e:              # a worker process died
-                    status = f"error: worker {type(e).__name__}: {e}"
-                last[ds, sub] = status
-                key = status.split(":")[0].split(" ")[0]
-                counts[key] = counts.get(key, 0) + 1
-                done += 1
-                if done % 10 == 0 or status not in ("ok", "cached"):
-                    el = time.time() - t0
-                    print(f"[{done}/{len(todo)}] {el/60:6.1f} min  {ds} {sub} -> {status}  "
-                          f"{counts}", flush=True)
-                if done % 200 == 0:
-                    print(table(queued, last), flush=True)
+        for (ds, sub, _), status in run_jobs(todo, a.workers):
+            last[ds, sub] = status
+            key = status.split(":")[0].split(" ")[0]
+            counts[key] = counts.get(key, 0) + 1
+            done += 1
+            if done % 10 == 0 or status not in ("ok", "cached"):
+                el = time.time() - t0
+                print(f"[{done}/{len(todo)}] {el/60:6.1f} min  {ds} {sub} -> {status}  "
+                      f"{counts}", flush=True)
+            if done % 200 == 0:
+                print(table(queued, last), flush=True)
         print(f"pass {npass + 1} done, {(time.time()-t0)/60:.1f} min  {counts}", flush=True)
         print(table(queued, last), flush=True)
         todo = [j for j in todo if retriable(last[j[0], j[1]])]
