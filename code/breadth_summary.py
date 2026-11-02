@@ -5,7 +5,11 @@ vitaldb_lambda.py, chennu_analysis.py and brake_analysis.py and writes
 results/breadth_summary.csv: for each claim, the effect under lambda = 0 and
 lambda = 1 with 95% intervals, the crossover lambda* with its
 Bayesian-bootstrap HDI, the posterior share of crossovers inside [0, 1] and
-inside [0, 2], and two classifications.
+inside [0, 2], and three classifications.
+
+placement, the rule the paper uses: "inside" when the share of crossovers in
+[0, 1] is at least 0.95, "outside" when it is at most 0.05, "undetermined"
+otherwise. The other two are kept for reference only.
 
 verdict, by significance at the two endpoints: "holds under both" (both
 intervals exclude zero, same sign), "reverses" (both exclude zero, opposite
@@ -20,6 +24,12 @@ no interval).
 The share inside [0, 2] is not in the group-level tables. It is recomputed
 from the local per-participant files with the seed the analysis scripts use,
 and kept only where the recomputed crossover equals the tabulated one.
+For the paired claims (sedation, induction; 7-20 participants) the same
+files give two small-sample checks: p_cross_in_01_t, the share in [0, 1]
+when the two mean changes (of ln a and ln b) follow a bivariate t
+distribution with n - 1 degrees of freedom instead of the Bayesian
+bootstrap, and lam_star_loo_lo / lam_star_loo_hi, the range of the crossover
+with one participant left out.
 
 results/breadth_summary_alt.csv holds the same claims under the alternative
 background specification of each dataset: knee+plateau instead of the power
@@ -83,6 +93,24 @@ def p_in(r, lo, hi):
     """Share of the Bayesian-bootstrap crossovers of an effect_curve result in [lo, hi]."""
     d = r["lam_star_draws"]
     return float(np.mean((d >= lo) & (d <= hi)))
+
+
+def paired_checks(la, lb, ndraw=100_000, seed=0):
+    """Small-sample checks of a paired crossover (mean d ln a / mean d ln b).
+
+    la, lb: (n,) paired changes. Returns the share of crossovers in [0, 1]
+    under a bivariate t distribution of the two means (sample covariance / n,
+    n - 1 degrees of freedom) and the leave-one-out range of the crossover."""
+    ok = np.isfinite(la) & np.isfinite(lb)
+    Y = np.column_stack([la[ok], lb[ok]])                 # (n, 2)
+    n = len(Y)
+    rng = np.random.default_rng(seed)
+    z = rng.multivariate_normal(np.zeros(2), np.cov(Y.T) / n, ndraw)
+    d = Y.mean(0) + z / np.sqrt(rng.chisquare(n - 1, ndraw) / (n - 1))[:, None]
+    ls = d[:, 0] / d[:, 1]
+    loo = (Y[:, 0].sum() - Y[:, 0]) / (Y[:, 1].sum() - Y[:, 1])
+    return dict(p_cross_in_01_t=float(np.mean((ls >= 0) & (ls <= 1))),
+                lam_star_loo_lo=float(loo.min()), lam_star_loo_hi=float(loo.max()))
 
 
 def hbn_ages():
@@ -177,6 +205,7 @@ def local_curves(spec):
                 roi = meas.split()[0]
                 d = [v[(roi, 3)] - v[(roi, 1)] for v in (la, lb)]
             out[claim] = effect_curve(*d, rng=np.random.default_rng(0))
+            out[claim].update(paired_checks(*d))
     timing = os.path.join(
         os.environ.get("EEG_DATA", os.path.join(os.path.expanduser("~"), "eeg_data")),
         "brake2024", "source", "_data", "EEG_data", "data_time_information.csv")
@@ -195,11 +224,14 @@ def local_curves(spec):
                     np.log(d[f"{band}_a_0"].where(d[f"{band}_a_0"] > 0))
             dB = np.log(d[f"{band}_b"]) - np.log(d[f"{band}_b_0"])
             out[claim] = effect_curve(dA.to_numpy(), dB.to_numpy(), rng=np.random.default_rng(0))
+            out[claim].update(paired_checks(dA.to_numpy(), dB.to_numpy()))
     return out
 
 
 def classify(O):
-    """Add the two classifications to a table of claims."""
+    """Add the three classifications to a table of claims."""
+    O["placement"] = np.where(O.p_cross_in_01 >= 0.95, "inside",
+                              np.where(O.p_cross_in_01 <= 0.05, "outside", "undetermined"))
     sig0 = np.sign(O.lam0_lo) == np.sign(O.lam0_hi)
     sig1 = np.sign(O.lam1_lo) == np.sign(O.lam1_hi)
     same = np.sign(O.lam0) == np.sign(O.lam1)
@@ -266,10 +298,14 @@ def build(alt=False):
                        r.n.iloc[0], r.iloc[0], "ln"))
         specs.append("as in the primary table")
     O = pd.DataFrame(out)
+    O["p_cross_in_01_t"] = O["lam_star_loo_lo"] = O["lam_star_loo_hi"] = np.nan
     # share of crossovers in [0, 2], where the local files reproduce the tabulated crossover
     for claim, r in local_curves(spec).items():
         m = (O.claim == claim) & np.isclose(O.lam_star, r["lam_star"], rtol=1e-9, atol=0)
         O.loc[m, "p_cross_in_02"] = p_in(r, 0, 2)
+        for k in ("p_cross_in_01_t", "lam_star_loo_lo", "lam_star_loo_hi"):
+            if k in r:
+                O.loc[m, k] = r[k]
     O = classify(O)
     if alt:
         O.insert(4, "specification", specs)
@@ -283,9 +319,10 @@ def main():
         O.to_csv(os.path.join(RES, name), index=False)
         print(f"\n{name}")
         print(O[["claim", "dataset", "n", "lam0", "lam1", "lam_star", "hdi_lo", "hdi_hi",
-                 "p_cross_in_01", "p_cross_in_02", "verdict", "verdict_crossover"]]
+                 "p_cross_in_01", "p_cross_in_02", "p_cross_in_01_t", "lam_star_loo_lo",
+                 "lam_star_loo_hi", "placement"]]
               .round(3).to_string(index=False))
-        for col in ("verdict", "verdict_crossover"):
+        for col in ("placement", "verdict", "verdict_crossover"):
             print(f"  {col}: " + ", ".join(f"{k} {v}" for k, v in O[col].value_counts().items()))
 
 
