@@ -31,3 +31,5 @@ results/trujillo_psd_drugs/
 results/trujillo_events_drugs/
 # MEG spectra are regenerable from OpenNeuro ds005752 via code/meg_nimh_extract_psd.py.
 results/meg_nimh_psd/
+results/aging_bandpower_*.csv
+results/srm_bandpower_*.csv

@@ -27,7 +27,15 @@ the 55 Hz fit range).
             condition the age slopes of ln a, ln b, ln a - ln b and the
             crossover lambda* on the participants present in every pipeline,
             plus the paired per-participant differences from the primary
-            spectra; writes results/hbn_clean_check.csv
+            spectra and the shift of lambda* from the primary pipeline
+            (pairs bootstrap over participants, resampled jointly across
+            pipelines, --nshift draws; two-sided bootstrap p); writes
+            results/hbn_clean_check.csv. --reuse-fits takes the fits from
+            WORK/fits.csv (WORK/segmatch/fits.csv for segmatch) instead of
+            refitting. Also the age slope of alpha reactivity (ln a or
+            ln a - ln b, eyes closed minus eyes open) and its crossover, on the
+            participants with positive narrowband power in both conditions and
+            every pipeline (cond "ec - eo")
   segmatch  the same, per arm, on the segments kept by both that arm and the
             primary pipeline: cleaning changes which segments pass the
             extractor's outlier rejection, so compare alone mixes the effect
@@ -38,7 +46,11 @@ the 55 Hz fit range).
 
 Usage: python hbn_clean_check.py select|download|extract|compare|segmatch
            [--work DIR] [--psd-dir DIR] [--arm gedai|iclabel|primary]
-           [--per-bin 24] [--workers 8]
+           [--per-bin 24] [--workers 8] [--subjects FILE] [--tag TAG]
+           [--nshift 5000] [--reuse-fits]
+--subjects replaces WORK/subjects.txt; --tag is appended to the names of the
+results files (the full sample: select --per-bin 100000 --tag _full, with
+WORK = hbn_clean_all.py's work dir).
 Extract with --workers 3 or fewer while the MATLAB cleaning runs; 8 broke the
 process pool.
 """
@@ -59,8 +71,8 @@ sys.path.insert(0, HERE)
 RES = os.path.join(HERE, "..", "results")
 
 
-def subject_list(work):
-    return os.path.join(work, "subjects.txt")
+def subject_list(a):
+    return a.subjects or os.path.join(a.work, "subjects.txt")
 
 
 def select(a):
@@ -76,7 +88,7 @@ def select(a):
     pick = (D.groupby("bin", group_keys=False)
              .apply(lambda g: g.sample(min(len(g), a.per_bin), random_state=0)))
     os.makedirs(a.work, exist_ok=True)
-    pick[["ds", "sub"]].to_csv(subject_list(a.work), sep=" ", header=False, index=False)
+    pick[["ds", "sub"]].to_csv(subject_list(a), sep=" ", header=False, index=False)
     print(f"{len(pick)} participants, ages {pick.age.min():.1f}-{pick.age.max():.1f}")
     print(pick.groupby("bin").size().to_string())
 
@@ -106,7 +118,7 @@ def fetch_raw(ds, sub, raw):
 def download(a):
     raw = os.path.join(a.work, "raw")
     os.makedirs(raw, exist_ok=True)
-    jobs = [l.split() for l in open(subject_list(a.work)) if l.strip()]
+    jobs = [l.split() for l in open(subject_list(a)) if l.strip()]
     with ThreadPoolExecutor(a.workers) as ex:
         out = list(ex.map(lambda j: fetch_raw(*j, raw), jobs))
     for s in sorted(set(out)):
@@ -130,9 +142,9 @@ def extract(a):
     else:
         src, out = os.path.join(a.work, f"clean_{a.arm}"), os.path.join(a.work, f"psd_{a.arm}")
     env = dict(os.environ, HBN_OUT=out, HBN_LOCAL_SET=src)
-    dss = sorted({l.split()[0] for l in open(subject_list(a.work)) if l.strip()})
+    dss = sorted({l.split()[0] for l in open(subject_list(a)) if l.strip()})
     subprocess.run([sys.executable, os.path.join(HERE, "hbn_extract_psd.py"), *dss,
-                    "--workers", str(a.workers), "--subjects", subject_list(a.work)],
+                    "--workers", str(a.workers), "--subjects", subject_list(a)],
                    env=env, check=True)
 
 
@@ -155,18 +167,23 @@ def slope(y, x):
 
 
 def compare(a):
-    subs = {l.split()[1] for l in open(subject_list(a.work)) if l.strip()}
-    jobs = []
+    subs = {l.split()[1] for l in open(subject_list(a)) if l.strip()}
     dirs = [("primary", a.psd_dir)] + [(arm, os.path.join(a.work, f"psd_{arm}")) for arm in ARMS]
-    for pipeline, d in dirs:
-        for p in glob.glob(os.path.join(d, "*.npz")):
-            if os.path.basename(p)[:-4].split("_", 1)[1] in subs:
-                jobs.append((p, pipeline))
-    with Pool(a.workers) as pool:
-        F = pd.DataFrame([r for rs in pool.imap(fit_one, jobs, chunksize=4) for r in rs])
-    F.to_csv(os.path.join(a.work, "fits.csv"), index=False)
-    O = summarise(F, [p for p, _ in dirs], a.nboot)
-    O.to_csv(os.path.join(RES, "hbn_clean_check.csv"), index=False)
+    fits = os.path.join(a.work, "fits.csv")
+    if a.reuse_fits:
+        F = pd.read_csv(fits)
+    else:
+        jobs = []
+        for pipeline, d in dirs:
+            for p in glob.glob(os.path.join(d, "*.npz")):
+                if os.path.basename(p)[:-4].split("_", 1)[1] in subs:
+                    jobs.append((p, pipeline))
+        with Pool(a.workers) as pool:
+            F = pd.DataFrame([r for rs in pool.imap(fit_one, jobs, chunksize=4) for r in rs])
+        F.to_csv(fits, index=False)
+    O = summarise(F, [p for p, _ in dirs], a.nboot, a.nshift)
+    O = pd.concat([O, reactivity(F, [p for p, _ in dirs], a.nboot)], ignore_index=True)
+    O.to_csv(os.path.join(RES, f"hbn_clean_check{a.tag}.csv"), index=False)
     report(O)
 
 
@@ -201,8 +218,19 @@ def matched(p, q, out_p, out_q):
 
 
 def segmatch(a):
+    fits = os.path.join(a.work, "segmatch", "fits.csv")
+    F = pd.read_csv(fits) if a.reuse_fits else segmatch_fits(a)
+    O = pd.concat([summarise(G, ["primary", arm], a.nboot, a.nshift).assign(arm=arm)
+                   for arm, G in F.groupby("arm", sort=False)])
+    O = O[["arm"] + [c for c in O.columns if c != "arm"]]
+    O.to_csv(os.path.join(RES, f"hbn_clean_check_segmatched{a.tag}.csv"), index=False)
+    report(O, ("arm", "model", "cond"))
+
+
+def segmatch_fits(a):
     ref = os.path.join(a.work, SEG_PRIMARY)
     jobs, counts, check = [], [], {}
+    subs = {l.split()[1] for l in open(subject_list(a)) if l.strip()}
     for arm in ARMS:
         src = os.path.join(a.work, f"psd_{arm}")
         if not os.path.isdir(src):
@@ -212,7 +240,7 @@ def segmatch(a):
         for q in sorted(glob.glob(os.path.join(src, "*.npz"))):
             name = os.path.basename(q)
             p, stored = os.path.join(ref, name), os.path.join(a.psd_dir, name)
-            if not os.path.exists(p):
+            if name[:-4].split("_", 1)[1] not in subs or not os.path.exists(p):
                 continue
             if name not in check and os.path.exists(stored):
                 # the re-extraction should reproduce the stored primary spectra
@@ -237,17 +265,29 @@ def segmatch(a):
         F = pd.DataFrame([dict(r, arm=arm) for (_, _, arm), rr in zip(jobs, rs) for r in rr])
     F = F[F.n_seg > 0]
     F.to_csv(os.path.join(a.work, "segmatch", "fits.csv"), index=False)
-    O = pd.concat([summarise(G, ["primary", arm], a.nboot).assign(arm=arm)
-                   for arm, G in F.groupby("arm", sort=False)])
-    O = O[["arm"] + [c for c in O.columns if c != "arm"]]
-    O.to_csv(os.path.join(RES, "hbn_clean_check_segmatched.csv"), index=False)
-    report(O, ("arm", "model", "cond"))
+    return F
 
 
-def summarise(F, order, nboot):
+def lam_shift(x, Y, nshift, rng, block=500):
+    """Pairs bootstrap of lambda* = s_a / s_b (OLS age slopes) for several
+    pipelines at once. x: (n,) ages; Y: (n, 2 * n_pipes), columns ln a, ln b
+    per pipeline; participants are resampled once per draw for all pipelines.
+    Returns the (nshift, n_pipes) bootstrap lambda*."""
+    n, out = len(x), []
+    for start in range(0, nshift, block):
+        idx = rng.integers(0, n, size=(min(block, nshift - start), n))   # (B, n)
+        xc = x[idx] - x[idx].mean(1, keepdims=True)                      # (B, n)
+        Yb = Y[idx]                                                      # (B, n, k)
+        s = np.einsum("bn,bnk->bk", xc, Yb - Yb.mean(1, keepdims=True), optimize=True) \
+            / (xc ** 2).sum(1, keepdims=True)                            # (B, k) slopes
+        out.append(s[:, 0::2] / s[:, 1::2])
+    return np.concatenate(out)
+
+
+def summarise(F, order, nboot, nshift=5000):
     """Per model and condition, on the participants fitted in every pipeline
-    of ORDER: the age slopes, lambda*, and the paired differences from the
-    primary pipeline."""
+    of ORDER: the age slopes, lambda*, the paired differences from the
+    primary pipeline and the shift of lambda* from it."""
     from lambda_curve import effect_curve
     rows = []
     for (model, cond), G in F.groupby(["model", "cond"]):
@@ -277,6 +317,46 @@ def summarise(F, order, nboot):
                 rows.append(dict(model=model, cond=cond, pipeline=f"{arm} - primary", n=len(W),
                                  measure=meas + " (median)", est=np.median(dy), lo=np.nan,
                                  hi=np.nan))
+        if nshift and len(pipes) > 1:
+            Y = np.column_stack([np.log(W[(c, p)].to_numpy()) for p in pipes for c in ("a", "b")])
+            xc = x - x.mean()
+            s0 = xc @ (Y - Y.mean(0)) / (xc @ xc)
+            lam0 = s0[0::2] / s0[1::2]
+            lam = lam_shift(x, Y, nshift, np.random.default_rng(0))
+            for j, arm in enumerate(pipes[1:], 1):
+                d = lam[:, j] - lam[:, 0]
+                rows.append(dict(model=model, cond=cond, pipeline=f"{arm} - primary", n=len(W),
+                                 measure="lambda* shift", est=lam0[j] - lam0[0],
+                                 lo=np.percentile(d, 2.5), hi=np.percentile(d, 97.5),
+                                 p_shift=2 * min((d <= 0).mean(), (d >= 0).mean())))
+    return pd.DataFrame(rows)
+
+
+def reactivity(F, order, nboot):
+    """Age slope of alpha reactivity (eyes closed minus eyes open) under
+    lambda = 0 and 1, and its crossover, per model and pipeline."""
+    from lambda_curve import effect_curve
+    rows = []
+    for model, G in F.groupby("model"):
+        W = G.pivot_table(index=["subject", "age"], columns=["pipeline", "cond"],
+                          values=["a", "b"])
+        pipes = [p for p in order if ("a", p, "ec") in W.columns]
+        ok = W.notna().all(axis=1)
+        for p in pipes:
+            ok &= (W[("a", p, "ec")] > 0) & (W[("a", p, "eo")] > 0)
+        W = W[ok]
+        x = W.index.get_level_values("age").to_numpy()
+        for p in pipes:
+            la, lb = (np.log(W[(v, p, "ec")].to_numpy()) - np.log(W[(v, p, "eo")].to_numpy())
+                      for v in ("a", "b"))
+            r = effect_curve(la, lb, x=x, nboot=nboot, rng=np.random.default_rng(0))
+            for meas, y in (("lambda=0", la), ("background ln b", lb), ("lambda=1", la - lb)):
+                s, lo, hi = slope(y, x)
+                rows.append(dict(model=model, cond="ec - eo", pipeline=p, n=len(W),
+                                 measure=meas, est=s, lo=lo, hi=hi))
+            rows.append(dict(model=model, cond="ec - eo", pipeline=p, n=len(W),
+                             measure="crossover lambda*", est=r["lam_star"], lo=r["hdi"][0],
+                             hi=r["hdi"][1], p_cross_in_01=r["p_cross_in_01"]))
     return pd.DataFrame(rows)
 
 
@@ -287,8 +367,8 @@ def report(O, keys=("model", "cond")):
         for _, r in G.iterrows():
             raw = "lambda*" in r.measure or "median" in r.measure
             f = (lambda v: v) if raw else (lambda v: 100 * (np.exp(v) - 1))
-            extra = (f"  P(in [0,1]) {r.p_cross_in_01:.2f}"
-                     if "lambda*" in r.measure else "")
+            extra = (f"  p {r.p_shift:.4f}" if r.measure == "lambda* shift" else
+                     f"  P(in [0,1]) {r.p_cross_in_01:.2f}" if "lambda*" in r.measure else "")
             print(f"  {r.pipeline:18s} {r.measure:26s} {f(r.est):+8.3f}"
                   + ("" if raw and "lambda*" not in r.measure else
                      f" [{f(r.lo):+.3f}, {f(r.hi):+.3f}]") + ("" if raw else " %/y") + extra)
@@ -303,6 +383,10 @@ def main():
     ap.add_argument("--per-bin", type=int, default=24)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--nboot", type=int, default=2000)
+    ap.add_argument("--nshift", type=int, default=5000)
+    ap.add_argument("--subjects", default="")
+    ap.add_argument("--tag", default="")
+    ap.add_argument("--reuse-fits", action="store_true")
     a = ap.parse_args()
     dict(select=select, download=download, extract=extract, compare=compare,
          segmatch=segmatch)[a.step](a)

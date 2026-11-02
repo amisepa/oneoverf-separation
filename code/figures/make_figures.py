@@ -5,8 +5,7 @@ Main text
   2  alpha power against age under each separation rule (HBN)
   3  published claims re-tested: crossover lambda* per claim
      (results/breadth_summary.csv)
-  4  every estimate of lambda, by design (results/hbn_lambda_gmm.csv,
-     identification_summary.csv)
+  4  every estimate of lambda, by design (results/identification_summary.csv)
   5  what sets lambda in a synaptic model (results/sim_mechanisms.csv)
 Supplementary (--only 11-15)
   S1 identifiability: single spectrum vs across spectra
@@ -17,7 +16,7 @@ Supplementary (--only 11-15)
 
 Inputs: results/sim01.mat, results/sim02_steepen.mat, results/sim_topography_null_flanks.csv,
 results/hbn_topography_flanks.csv,
-results/hbn_lambda_gmm.csv, results/sim_topography_null.csv,
+results/identification_summary.csv, results/sim_topography_null.csv,
 results/hbn_age_alpha_robust.csv, results/hbn_age_alpha_crossover.csv,
 results/hbn_age_alpha_phases.csv, results/hbn_age_alpha_spline.csv, and the local
 per-subject files results/hbn_kp_fits.csv and results/hbn_topography*.npz
@@ -666,27 +665,17 @@ def fig_claims(outdir):
 def fig_estimates(outdir):
     """Every attempt to estimate lambda, grouped by design.
 
-    Everything drawn comes from results/identification_summary.csv, except the
-    HBN eyes-closed vs eyes-open rows, which show only the estimate from three
-    disjoint thirds (results/hbn_lambda_gmm_thirds.csv): its interval and every
-    root of the moment condition, none of them singled out. The half-split
-    estimates of those rows are no longer drawn, nor ds003690 (which failed its
-    control band). Right of the axis, each estimate's status.
+    Everything drawn comes from results/identification_summary.csv. The HBN
+    eyes-closed vs eyes-open rows (three interleaved thirds) show their
+    interval and every root of the moment condition, none of them singled out.
+    Rows after artefact cleaning (cleaning == "ICA") are drawn in teal.
+    Right of the axis, each estimate's status.
     """
     from matplotlib.lines import Line2D
     I = pd.read_csv(os.path.join(RES, "identification_summary.csv"))
-    for c in ("lam_alt", "lo_alt", "hi_alt", "n_patients"):
-        if c not in I:
-            I[c] = np.nan
-    f3 = os.path.join(RES, "hbn_lambda_gmm_thirds.csv")
-    T3 = pd.read_csv(f3) if os.path.exists(f3) else pd.DataFrame()
-    if len(T3):
-        T3 = T3[(T3.band == "alpha") & (T3.estimator == "thirds")]
-        T3 = {(("knee + plateau" if m == "knee_plateau" else "power law") + ", " + w): r
-              for m, w, r in zip(T3.model, T3.window, T3.itertuples())}
-    C3 = "#7b4fa3"
+    C3, CICA = "#7b4fa3", "#1b8a7a"
     lo_x, hi_x, dy = -0.9, 2.2, 0.27
-    fig, ax = plt.subplots(figsize=(W2 * 0.62, 5.4))
+    fig, ax = plt.subplots(figsize=(W2 * 0.62, 6.4))
     ax.axvline(0, color=C0, lw=0.8, ls="--")
     ax.axvline(1, color=C1, lw=0.8, ls="--")
     order = ["between conditions: eyes closed vs open",
@@ -730,25 +719,26 @@ def fig_estimates(outdir):
                     .replace("after 2-h tasks", "after tasks")
                     .replace("covariates: ", "").replace("censor ", "")
                     .replace("flanks 3-6, 26-36", "flanks"))
+            ica = getattr(r, "cleaning", "none") == "ICA"
+            if ica:
+                spec += ", ICA"
             if np.isfinite(r.n_patients):
                 # channels of this row come from this many patients
                 spec = spec.replace(" channels", f" channels, {int(r.n_patients)} patients")
-            if np.isfinite(r.lam_alt):
-                # HBN: only the thirds estimate, which removes the half-split biases
-                t3 = T3.get(r.spec) if len(T3) else None
-                if t3 is None:
-                    continue
+            if g == order[0]:
+                # HBN thirds: the interval and every root
                 thirds = True
-                interval(ax, t3.lo, t3.hi, y, lo_x, hi_x, C3, ms=3, lw=1)
-                roots = [float(v) for v in str(t3.roots).split()]
+                interval(ax, r.lo, r.hi, y, lo_x, hi_x, C3, ms=3, lw=1)
+                roots = [float(v) for v in str(r.roots).split()]
                 ax.plot([v for v in roots if lo_x <= v <= hi_x],
                         [y] * sum(lo_x <= v <= hi_x for v in roots),
                         "D", color=C3, mfc="white", ms=2.6, mew=0.8, ls="")
             else:
-                interval(ax, r.lo, r.hi, y, lo_x, hi_x, INK, lw=1)
-                ax.plot(r.lam, y, "o", color=INK, ms=3.5)
-            ax.text(1.02, y, status(r), transform=tr, fontsize=5.5, color=INK, ha="left",
-                    va="center", clip_on=False)
+                col = CICA if ica else INK
+                interval(ax, r.lo, r.hi, y, lo_x, hi_x, col, lw=1)
+                ax.plot(r.lam, y, "o", color=col, ms=3.5)
+            ax.text(1.02, y, status(r), transform=tr, fontsize=5.5, color=CICA if ica else INK,
+                    ha="left", va="center", clip_on=False)
             ticks.append(y)
             labels.append(spec)
             y += 1
@@ -760,6 +750,11 @@ def fig_estimates(outdir):
     ax.set_xlabel("Estimated λ (95% interval; 0 additive, 1 multiplicative)")
     handles = [Line2D([], [], color=INK, marker=">", ls="-", lw=1, ms=3, mec="none",
                       markevery=[1], label="interval continues past the axis")]
+    if (I.get("cleaning", pd.Series(dtype=str)) == "ICA").any():
+        handles.insert(0, Line2D([], [], color=CICA, marker="o", ls="-", lw=1, ms=3.5,
+                                 label="after artefact cleaning (ICA)"))
+        handles.insert(0, Line2D([], [], color=INK, marker="o", ls="-", lw=1, ms=3.5,
+                                 label="without artefact cleaning"))
     if thirds:
         handles.insert(0, Line2D([], [], color=C3, marker="D", mfc="white", mew=0.8, ls="-", lw=1,
                                  ms=2.6, label="three interleaved thirds: interval and every root"))

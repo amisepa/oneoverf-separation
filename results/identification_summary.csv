@@ -1,22 +1,27 @@
-design,dataset,spec,n,lam,lo,hi,calibration,lam_alt,lo_alt,hi_alt,n_patients,lam_min,lam_max
-between conditions: eyes closed vs open,"HBN, 5-22 y","power law, censor 6-16",2396,0.7696346718374834,0.6394963900832259,0.8985049965552822,,0.3504594511486231,0.2440697391374739,0.4517964807832319,,,
-between conditions: eyes closed vs open,"HBN, 5-22 y","power law, flanks 3-6, 26-36",2396,0.2876106838229639,0.071531907095943,0.4775394083545791,,-0.0538318057519772,-0.250890123430799,0.1036067201083188,,,
-between conditions: eyes closed vs open,"HBN, 5-22 y","knee + plateau, censor 6-16",2396,0.8024060645266138,0.6425870507369684,0.9725375367945196,,0.0919298994537842,-0.108418947786061,0.2268306322283839,,,
-between conditions: eyes closed vs open,"HBN, 5-22 y","knee + plateau, flanks 3-6, 26-36",2396,0.3710477614598746,0.1859164615241441,0.5692854540738375,,-0.1556654706958649,-0.314378680779074,-0.0624308775189933,,,
-"within session: epoch fluctuations, eyes open","ds003690, 20-75 y","flanks 2-6, 26-32, covariates: none",48,0.4082281475599928,0.1312971578651443,1.0663658270623282,"0 -> 0.06, 0.5 -> 0.52, 1 -> 0.96",,,,,0.2906927989094052,0.463489280680083
-"within session: epoch fluctuations, eyes open","ds003690, 20-75 y","flanks 2-6, 26-32, covariates: pupil",48,0.4167190438682918,0.1196709708643749,0.9741502868744552,"0 -> 0.06, 0.5 -> 0.52, 1 -> 0.96",,,,,,
-"within session: segment fluctuations, eyes closed","Dortmund, 20-70 y","flanks 2-6, 26-32, before 2-h tasks",599,1.6642851161783616,1.5732936802307913,1.778516251926124,"0 -> 0.09, 0.5 -> 0.74, 1 -> 1.17",,,,,1.631384689034633,1.670259232676281
-"within session: segment fluctuations, eyes open","Dortmund, 20-70 y","flanks 2-6, 26-32, before 2-h tasks",533,0.2706537002974064,0.104945954857713,0.4506838633032276,"0 -> 0.05, 0.5 -> 0.62, 1 -> 1.11",,,,,0.1683964230247383,0.3080235705822743
-"within session: segment fluctuations, eyes closed","Dortmund, 20-70 y","flanks 2-6, 26-32, after 2-h tasks",606,1.358143975848589,1.2691609084193385,1.4711551300651315,"0 -> 0.16, 0.5 -> 0.74, 1 -> 1.23",,,,,1.3024656769699297,1.3607684349136582
-"within session: segment fluctuations, eyes open","Dortmund, 20-70 y","flanks 2-6, 26-32, after 2-h tasks",545,0.4910699000987975,0.313122432236751,0.681102691263985,"0 -> 0.00, 0.5 -> 0.46, 1 -> 0.93",,,,,0.4052457988251651,0.5732214344522172
-between doses: propofol baseline vs moderate,Chennu 2016,"posterior, censor 6-16",20,0.98261715046026,-0.1377030629621096,1.9699509699303055,,,,,,,
-between doses: propofol baseline vs moderate,Chennu 2016,"frontal, censor 6-16",20,0.3284817793713123,-0.7931598306471375,1.7755453478374517,,,,,,,
-between doses: propofol baseline vs moderate,Chennu 2016,"posterior, censor 6-25",20,1.2144475435830413,0.1889596149650189,2.4148003763941746,,,,,,,
-between doses: propofol baseline vs moderate,Chennu 2016,"frontal, censor 6-25",20,0.8800652722633396,-0.5913429571290985,2.4733214334062037,,,,,,,
-between sessions: test-retest,"SRM, 17-71 y","SRM, eyes closed, later session",41,0.3272343570216789,0.0168279758159891,0.6195580795965574,,,,,,,
-between sessions: test-retest,"Dortmund, 20-70 y","Dortmund, eyes closed, 5 years",197,0.8740442618462556,0.6140000209924574,1.1456478959734306,,,,,,,
-between sessions: test-retest,"Dortmund, 20-70 y","Dortmund, eyes open, 5 years",198,0.2750964470521787,-0.0927023709342526,2.94312501364943,,,,,,,
-"within session: epoch fluctuations, intracranial",ds003688 iEEG,"all channels, covariates: none",1648,0.9309870173648862,0.8021395436924397,1.0785706366244148,"0 -> 0.01, 0.5 -> 0.54, 1 -> 1.02",,,,50,,
-"within session: epoch fluctuations, intracranial",ds003688 iEEG,"all channels, covariates: EOG + EMG",1648,0.933187919687638,0.8036381827268485,1.078745490057198,"0 -> 0.01, 0.5 -> 0.54, 1 -> 1.02",,,,50,,
-"within session: epoch fluctuations, intracranial",ds003688 iEEG,"posterior channels, covariates: none",203,0.7596650477259712,0.6956755626334612,0.8482193204972982,"0 -> 0.01, 0.5 -> 0.54, 1 -> 1.02",,,,23,,
-"within session: epoch fluctuations, intracranial",ds003688 iEEG,"posterior channels, covariates: EOG + EMG",203,0.7660464979899012,0.7010076483198877,0.8578797366310128,"0 -> 0.01, 0.5 -> 0.54, 1 -> 1.02",,,,23,,
+design,dataset,spec,cleaning,n,lam,lo,hi,calibration,n_patients,lam_min,lam_max,n_roots,roots
+between conditions: eyes closed vs open,"HBN, 5-22 y","power law, censor 6-16",none,2396,0.7022397855028796,-0.9611122966052038,0.926681079642347,,,,,3,-0.853 0.702 1.558
+between conditions: eyes closed vs open,"HBN, 5-22 y","power law, flanks 3-6, 26-36",none,2396,1.7570947306985385,-0.6169163272072407,2.240852714256385,,,,,5,-0.602 0.160 1.719 1.757 2.144
+between conditions: eyes closed vs open,"HBN, 5-22 y","knee + plateau, censor 6-16",none,2396,-0.8381958969348273,-0.9160839574424612,-0.2591936622513556,,,,,4,-0.838 -0.425 0.770 1.220
+between conditions: eyes closed vs open,"HBN, 5-22 y","knee + plateau, flanks 3-6, 26-36",none,2396,0.1064597435465667,-0.9739425373112984,1.4766318121141844,,,,,4,-0.961 -0.251 0.106 2.358
+"within session: segment fluctuations, eyes closed","Dortmund, 20-70 y","flanks 2-6, 26-32, before 2-h tasks",none,599,1.6642851161783616,1.5732936802307913,1.778516251926124,"0 -> 0.09, 0.5 -> 0.74, 1 -> 1.17",,1.631384689034633,1.670259232676281,,
+"within session: segment fluctuations, eyes open","Dortmund, 20-70 y","flanks 2-6, 26-32, before 2-h tasks",none,533,0.2706537002974064,0.104945954857713,0.4506838633032276,"0 -> 0.05, 0.5 -> 0.62, 1 -> 1.11",,0.1683964230247383,0.3080235705822743,,
+"within session: segment fluctuations, eyes closed","Dortmund, 20-70 y","flanks 2-6, 26-32, after 2-h tasks",none,606,1.358143975848589,1.2691609084193385,1.4711551300651315,"0 -> 0.16, 0.5 -> 0.74, 1 -> 1.23",,1.3024656769699297,1.3607684349136582,,
+"within session: segment fluctuations, eyes open","Dortmund, 20-70 y","flanks 2-6, 26-32, after 2-h tasks",none,545,0.4910699000987975,0.313122432236751,0.681102691263985,"0 -> 0.00, 0.5 -> 0.46, 1 -> 0.93",,0.4052457988251651,0.5732214344522172,,
+"within session: segment fluctuations, eyes closed","Dortmund, 20-70 y","flanks 2-6, 26-32, before 2-h tasks",ICA,603,1.7692228190129875,1.6517531094095912,1.9116297860975449,"0 -> -0.17, 0.5 -> 0.58, 1 -> 1.14",,1.7551426422879215,1.7950764003942448,,
+"within session: segment fluctuations, eyes open","Dortmund, 20-70 y","flanks 2-6, 26-32, before 2-h tasks",ICA,599,1.6267704384321853,1.3648174777631648,1.9103123760433012,"0 -> 0.26, 0.5 -> 0.75, 1 -> 1.15",,1.452736698223537,1.6267704384321853,,
+"within session: segment fluctuations, eyes closed","Dortmund, 20-70 y","flanks 2-6, 26-32, after 2-h tasks",ICA,607,1.4061842689230055,1.2856808116809035,1.5133488123783334,"0 -> 0.22, 0.5 -> 0.77, 1 -> 1.23",,1.362556488740615,1.408862853191561,,
+"within session: segment fluctuations, eyes open","Dortmund, 20-70 y","flanks 2-6, 26-32, after 2-h tasks",ICA,599,1.596607628580622,1.4328938822594584,1.7957555185238183,"0 -> 0.02, 0.5 -> 0.57, 1 -> 1.04",,1.4875053346765736,1.601404603481443,,
+between doses: propofol baseline vs moderate,Chennu 2016,"posterior, censor 6-16",none,20,0.98261715046026,-0.1377030629621096,1.9699509699303055,,,,,,
+between doses: propofol baseline vs moderate,Chennu 2016,"frontal, censor 6-16",none,20,0.3284817793713123,-0.7931598306471375,1.7755453478374517,,,,,,
+between doses: propofol baseline vs moderate,Chennu 2016,"posterior, censor 6-25",none,20,1.2144475435830413,0.1889596149650189,2.4148003763941746,,,,,,
+between doses: propofol baseline vs moderate,Chennu 2016,"frontal, censor 6-25",none,20,0.8800652722633396,-0.5913429571290985,2.4733214334062037,,,,,,
+between sessions: test-retest,"SRM, 17-71 y","SRM, eyes closed, later session",none,41,0.3272343570216789,0.0168279758159891,0.6195580795965574,,,,,1,[0.32723435702167897]
+between sessions: test-retest,"Dortmund, 20-70 y","Dortmund, eyes closed, 5 years",none,197,0.8740442618462556,0.6140000209924574,1.1456478959734306,,,,,1,[0.8740442618462556]
+between sessions: test-retest,"Dortmund, 20-70 y","Dortmund, eyes open, 5 years",none,198,0.2750964470521787,-0.0927023709342526,2.94312501364943,,,,,3,"[-0.32349430470112717, 0.2750964470521787, 2.891534485621243]"
+between sessions: test-retest,"SRM, 17-71 y","SRM, eyes closed, later session",ICA,41,0.7913215208210597,0.3978199196693625,1.1899370828078466,,,,,1,[0.7913215208210597]
+between sessions: test-retest,"Dortmund, 20-70 y","Dortmund, eyes closed, 5 years",ICA,196,0.9272494567695588,0.7153048965261318,1.1913817376038096,,,,,1,[0.9272494567695587]
+between sessions: test-retest,"Dortmund, 20-70 y","Dortmund, eyes open, 5 years",ICA,196,1.1256885422299814,0.7096221983328941,1.6574614649246484,,,,,2,"[-0.40376121372021617, 1.1256885422299814]"
+"within session: epoch fluctuations, intracranial",ds003688 iEEG,"all channels, covariates: none",none,1648,0.8080517926461339,0.6825840882940403,0.9471657174858128,"0 -> 0.02, 0.5 -> 0.55, 1 -> 1.03",50,0.7352749720846374,0.8282534108177002,,
+"within session: epoch fluctuations, intracranial",ds003688 iEEG,"all channels, covariates: EOG + EMG",none,1648,0.8105130618605326,0.684818461408019,0.949536603180053,"0 -> 0.02, 0.5 -> 0.55, 1 -> 1.03",50,,,,
+"within session: epoch fluctuations, intracranial",ds003688 iEEG,"posterior channels, covariates: none",none,203,0.6387076807653452,0.5514609593453196,0.7122604120068194,"0 -> 0.02, 0.5 -> 0.55, 1 -> 1.03",23,,,,
+"within session: epoch fluctuations, intracranial",ds003688 iEEG,"posterior channels, covariates: EOG + EMG",none,203,0.6449908866223493,0.5529502921609403,0.713479561182104,"0 -> 0.02, 0.5 -> 0.55, 1 -> 1.03",23,,,,

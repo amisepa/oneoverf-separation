@@ -21,9 +21,10 @@ lambda = 1 (sim_mechanisms.py), so test-retest variation is expected to pull
 the estimate towards 1.
 
 Writes results/srm_bandpower.csv (per recording; local) and
-results/srm_lambda.csv.
+results/srm_lambda.csv; --tag TAG is appended to these names and to the
+aging_bandpower.csv it reads (_iclabel for the cleaned spectra).
 
-Usage: python srm_lambda.py [--srm DIR] [--workers 6]
+Usage: python srm_lambda.py [--srm DIR] [--workers 6] [--tag TAG]
 """
 import argparse
 import glob
@@ -106,12 +107,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--srm", default=os.environ.get("SRM_OUT", "srm_psd"))
     ap.add_argument("--workers", type=int, default=6)
+    ap.add_argument("--tag", default="")
     a = ap.parse_args()
     with Pool(a.workers) as pool:
         T = pd.DataFrame([r for rs in pool.map(one, sorted(glob.glob(os.path.join(a.srm, "*.npz"))))
                           for r in rs])
     T = qc(T)
-    T.to_csv(os.path.join(RES, "srm_bandpower.csv"), index=False)
+    T.to_csv(os.path.join(RES, f"srm_bandpower{a.tag}.csv"), index=False)
     print(f"SRM: {T.subject.nunique()} participants, "
           f"{T[(T.split == 'full') & (T.model == 'fixed')].groupby('session').size().to_dict()} "
           f"recordings; excluded {int(T[(T.split == 'full') & (T.model == 'fixed')].bad.sum())}")
@@ -131,14 +133,14 @@ def main():
         ok = T[~T.bad.fillna(True)]
         rows.append(retest_gmm(ok, "subject", "t1", "t2", "srm retest, log-free lambda", model))
     # Dortmund, session 1 vs 2 (about five years), eyes closed and open before the tasks
-    ag = pd.read_csv(os.path.join(RES, "aging_bandpower.csv"))
+    ag = pd.read_csv(os.path.join(RES, f"aging_bandpower{a.tag}.csv"))
     ag = ag[(ag.study == "dortmund") & ~ag.bad.fillna(True).astype(bool)]
     for cond in ("ec_pre", "eo_pre"):
         for model in ("fixed", "knee_plateau"):
             rows.append(retest_gmm(ag[ag.cond == cond], "subject", 1, 2,
                                    f"dortmund retest {cond}, log-free lambda", model))
     O = pd.DataFrame(rows)
-    O.to_csv(os.path.join(RES, "srm_lambda.csv"), index=False)
+    O.to_csv(os.path.join(RES, f"srm_lambda{a.tag}.csv"), index=False)
     pd.set_option("display.width", 250)
     print(O.round(3).to_string(index=False))
 

@@ -20,9 +20,10 @@ and, for the published specparam results, the same contrasts on specparam's
 flattened alpha (mean of log10 P - log10 L over the band; lambda = 1) and on
 total power.
 
-Usage: python aging_lambda.py [--dortmund DIR] [--lemon DIR] [--workers 12]
+Usage: python aging_lambda.py [--dortmund DIR] [--lemon DIR] [--workers 12] [--tag TAG]
 Writes results/aging_bandpower.csv (per recording; local) and
-results/aging_lambda.csv.
+results/aging_lambda.csv; --tag is appended to the names (_iclabel for the
+cleaned spectra).
 """
 import argparse
 import glob
@@ -160,13 +161,14 @@ def main():
     ap.add_argument("--dortmund", default=os.environ.get("DORTMUND_OUT", "dortmund_psd"))
     ap.add_argument("--lemon", default=os.environ.get("LEMON_OUT", "lemon_psd"))
     ap.add_argument("--workers", type=int, default=12)
+    ap.add_argument("--tag", default="")
     a = ap.parse_args()
     jobs = [(p, "dortmund") for p in sorted(glob.glob(os.path.join(a.dortmund, "*.npz")))] + \
            [(p, "lemon") for p in sorted(glob.glob(os.path.join(a.lemon, "*.npz")))]
     with Pool(a.workers) as pool:
         T = pd.DataFrame([r for rs in pool.imap(one, jobs, chunksize=4) for r in rs])
     T = qc(T)
-    T.to_csv(os.path.join(RES, "aging_bandpower.csv"), index=False)
+    T.to_csv(os.path.join(RES, f"aging_bandpower{a.tag}.csv"), index=False)
     out = []
     for model in ("fixed", "knee_plateau"):
         F = T[(T.split == "full") & (T.model == model) & ~T.bad & (T.a > 0)]
@@ -230,8 +232,8 @@ def main():
                             hi=float(y.mean() + 1.96 * y.std(ddof=1) / np.sqrt(len(y))),
                             p=float(t.pvalue), n=len(y)))
     O = pd.DataFrame(out)
-    O.to_csv(os.path.join(RES, "aging_lambda.csv"), index=False)
-    pd.DataFrame(pub).to_csv(os.path.join(RES, "aging_published.csv"), index=False)
+    O.to_csv(os.path.join(RES, f"aging_lambda{a.tag}.csv"), index=False)
+    pd.DataFrame(pub).to_csv(os.path.join(RES, f"aging_published{a.tag}.csv"), index=False)
     pd.set_option("display.width", 220)
     print(T.groupby(["study", "cond"]).apply(lambda g: pd.Series(dict(
         n=g.subject.nunique(), bad=int(g[(g.split == "full") & (g.model == "fixed")].bad.sum())))))

@@ -37,7 +37,7 @@ background, alpha peak and segment-to-segment background fluctuation, with
 coupling L, exponential noise per bin and the same analysis.
 
 Usage: python dortmund_levels.py [--data DIR] [--nboot 200] [--simulate L]
-       [--cond ec_pre] [--max-subjects N] [--background flanks|power-law]
+       [--cond ec_pre] [--max-subjects N] [--background flanks|power-law] [--tag TAG]
        [--censor-hi 16]
 """
 import argparse
@@ -209,6 +209,8 @@ def main():
     ap.add_argument("--censor-hi", type=float, default=16.0,
                     help="upper edge of the censored band of the power-law background")
     ap.add_argument("--no-cov", action="store_true")
+    ap.add_argument("--tag", default="", help="appended to the names of the results files "
+                                              "(_iclabel for the cleaned spectra)")
     a = ap.parse_args()
     flanks = FLANKS if a.background == "flanks" else None
     global CENSOR
@@ -245,9 +247,9 @@ def main():
             t = tracking(*arrays(units, False, fl, band)[:4], a.nboot, rng)
             ctl.append(control_row(key, band, fl, r, t, r["reliability"]))
     if var:
-        merge_rows("within_recording_variants.csv", var)
-        merge_rows("within_recording_controls.csv", ctl)
-    tag = "" if flanks else f"_c{a.censor_hi:.0f}"
+        merge_rows(f"within_recording_variants{a.tag}.csv", var)
+        merge_rows(f"within_recording_controls{a.tag}.csv", ctl)
+    tag = a.tag + ("" if flanks else f"_c{a.censor_hi:.0f}")
     name = (f"dortmund_levels{tag}.csv" if a.simulate is None
             else f"dortmund_levels_sim{a.simulate}{tag}.csv")
     pd.DataFrame(out).to_csv(os.path.join(RES, name), index=False)

@@ -1,68 +1,47 @@
 """Collect every attempt to estimate lambda into one table.
 
-- HBN eyes closed vs eyes open, log-free two-condition estimator
-  (lambda_gmm.bootstrap, root-tracking) for the four specifications of
-  hbn_kp.py; computed here from results/hbn_kp_fits.csv (local) and saved to
-  results/hbn_lambda_gmm.csv.
-- ds003690 within-session eyes-open fluctuations (ds003690_lambda.py), with
-  its data-matched calibration.
+- HBN eyes closed vs eyes open, log-free two-condition estimator with the
+  band total, the background and the instrument from three interleaved
+  thirds of each recording, for the four specifications of hbn_kp.py
+  (hbn_thirds.py, results/hbn_lambda_gmm_thirds.csv): the selected root, its
+  interval, and every root of the moment condition (n_roots, roots).
 - Dortmund within-session fluctuations, eyes closed and open, before and
-  after the task battery (dortmund_levels.py), with calibration.
-  For these two, the background is the power law through the flanks 2-6 and
-  26-32 Hz; lam_min and lam_max give the range of the estimate without
-  covariates over that and four other choices of flanks
-  (results/within_recording_variants.csv).
+  after the task battery (dortmund_levels.py), with calibration. The
+  background is the power law through the flanks 2-6 and 26-32 Hz; lam_min
+  and lam_max give the range of the estimate without covariates over that and
+  four other choices of flanks (results/within_recording_variants.csv).
 - Chennu graded propofol, baseline vs moderate (chennu_lambda_gmm.csv).
 - Test-retest: SRM (later session) and Dortmund (5 years), log-free
   estimator with sessions as conditions (srm_lambda.py).
 - Intracranial within-session fluctuations (ieeg_lambda.py), with its
   data-matched calibration; n_patients is the number of patients behind the
-  channels of each row.
+  channels of each row. The background is the same flank fit, and the row
+  of all channels without covariates carries the range over the five
+  choices of flanks.
 
-When hbn_half_assignment.py has been run, the HBN rows carry both half
-assignments of the instrument: lam, lo, hi with the instrument from the half
-of the band total (the default of lambda_gmm), lam_alt, lo_alt, hi_alt with
-the instrument from the half of the background, both with roots searched on
--1 to 3. The Chennu rows then take their intervals from the same search
-range (results/twocond_lambda_gmm_halves.csv, which also holds the second
-assignment for Chennu and for the test-retest rows).
+When hbn_half_assignment.py has been run, the Chennu rows take their
+intervals from roots searched on -1 to 3 (results/twocond_lambda_gmm_halves.csv).
+The Dortmund and SRM rows are repeated after artefact cleaning (cleaning =
+"ICA"; the *_iclabel.csv outputs of dortmund_levels.py and srm_lambda.py run
+with --tag _iclabel); every other row has cleaning = "none".
 
-Writes results/identification_summary.csv.
+Writes results/identification_summary.csv (the rows of Supplementary Table 6).
 
 Usage: python identification_summary.py
 """
 import os
-import sys
 
-import numpy as np
 import pandas as pd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RES = os.path.join(HERE, "..", "results")
-sys.path.insert(0, HERE)
-import lambda_gmm as G
+CLEANING = (("", "none"), ("_iclabel", "ICA"))
 
 
-def hbn_gmm():
-    path = os.path.join(RES, "hbn_lambda_gmm.csv")
-    if os.path.exists(path):
-        return pd.read_csv(path)
-    k = pd.read_csv(os.path.join(RES, "hbn_kp_fits.csv"))
-    Q = pd.read_csv(os.path.join(RES, "hbn_qc_flags.csv"), index_col=0)
-    k = k[k.subject.isin(Q.index[Q.qc_ok]) & (k.band == "alpha") & (k.split != "full")]
-    rows = []
-    for model in ("fixed", "knee_plateau"):
-        for win in ("censor 6-16", "flanks 3-6, 26-36"):
-            g = k[(k.model == model) & (k.window == win)]
-            w = g.pivot_table(index="subject", columns=["cond", "split"], values=["tot", "b"]).dropna()
-            arr = [w[v][c][["odd", "even"]].to_numpy() for v, c in
-                   (("tot", "eo"), ("tot", "ec"), ("b", "eo"), ("b", "ec"))]
-            r = G.bootstrap(*arr, nboot=300, rng=np.random.default_rng(0))
-            rows.append(dict(model=model, window=win, n=len(w), lam=r["lam"], lo=r["ci"][0],
-                             hi=r["ci"][1], fail=r["boot_fail"]))
-    D = pd.DataFrame(rows)
-    D.to_csv(path, index=False)
-    return D
+def hbn_thirds():
+    """HBN estimates from three interleaved thirds (written by hbn_thirds.py)."""
+    T = pd.read_csv(os.path.join(RES, "hbn_lambda_gmm_thirds.csv"))
+    return T[(T.band == "alpha") & (T.estimator == "thirds")]
 
 
 def both_assignments(name, keys):
@@ -78,10 +57,10 @@ def both_assignments(name, keys):
                     hi_alt=r["hi", "background"]) for k, r in w.iterrows()}
 
 
-def flank_range():
+def flank_range(tag=""):
     """Smallest and largest estimate over the choices of flanks, per dataset
     and recording; empty if the within-recording scripts have not been run."""
-    path = os.path.join(RES, "within_recording_variants.csv")
+    path = os.path.join(RES, f"within_recording_variants{tag}.csv")
     if not os.path.exists(path):
         return {}
     g = pd.read_csv(path).groupby(["dataset", "recording"]).lam
@@ -102,36 +81,28 @@ def calibration(pattern, query):
 
 def main():
     out = []
-    H = hbn_gmm()
-    B = both_assignments("hbn_lambda_gmm_halves.csv", ["model", "window"])
     T = both_assignments("twocond_lambda_gmm_halves.csv", ["dataset", "spec", "model"])
-    for r in H.itertuples():
+    for r in hbn_thirds().itertuples():
         out.append(dict(design="between conditions: eyes closed vs open", dataset="HBN, 5-22 y",
                         spec=f"{'power law' if r.model == 'fixed' else 'knee + plateau'}, {r.window}",
-                        n=r.n, lam=r.lam, lo=r.lo, hi=r.hi, calibration=""))
-        out[-1].update(B.get((r.model, r.window), {}))
+                        n=r.n, lam=r.lam, lo=r.lo, hi=r.hi, calibration="",
+                        n_roots=r.n_roots, roots=r.roots))
     V = flank_range()
-    d = pd.read_csv(os.path.join(RES, "ds003690_lambda.csv"))
-    for r in d[(d.covariates.isin(["none", "pupil"])) & (d.group == "all")].itertuples():
-        out.append(dict(design="within session: epoch fluctuations, eyes open",
-                        dataset="ds003690, 20-75 y",
-                        spec=f"flanks 2-6, 26-32, covariates: {r.covariates}",
-                        n=r.n_units, lam=r.lam, lo=r.lo, hi=r.hi,
-                        calibration=calibration("ds003690_lambda_sim{}.csv", "group == 'all'")))
-        if r.covariates == "none":
-            out[-1].update(V.get(("ds003690", "eyes open"), {}))
-    p = os.path.join(RES, "dortmund_levels.csv")
-    if os.path.exists(p):
+    for tag, cleaning in CLEANING:
+        p = os.path.join(RES, f"dortmund_levels{tag}.csv")
+        if not os.path.exists(p):
+            continue
+        Vt = flank_range(tag)
         for r in pd.read_csv(p).query("covariates == False").itertuples():
             state = {"ec": "eyes closed", "eo": "eyes open"}[r.cond[:2]]
             when = "before" if r.cond.endswith("pre") else "after"
             out.append(dict(design=f"within session: segment fluctuations, {state}",
-                            dataset="Dortmund, 20-70 y",
+                            dataset="Dortmund, 20-70 y", cleaning=cleaning,
                             spec=f"flanks 2-6, 26-32, {when} 2-h tasks",
                             n=r.n_units, lam=r.lam, lo=r.lo, hi=r.hi,
-                            calibration=calibration("dortmund_levels_sim{}.csv",
+                            calibration=calibration("dortmund_levels_sim{}" + tag + ".csv",
                                                     f"cond == '{r.cond}'")))
-            out[-1].update(V.get(("Dortmund", r.cond), {}))
+            out[-1].update(Vt.get(("Dortmund", r.cond), {}))
     x = pd.read_csv(os.path.join(RES, "chennu_lambda_gmm.csv"))
     for r in x[x.contrast == "baseline -> moderate"].itertuples():
         out.append(dict(design="between doses: propofol baseline vs moderate",
@@ -139,18 +110,23 @@ def main():
                         lo=r.lo, hi=r.hi, calibration=""))
         t = T.get(("Chennu 2016", f"{r.roi}, {r.window}, {r.contrast}", "fixed"), {})
         out[-1].update({k: t[k] for k in ("lam", "lo", "hi") if k in t})
-    p = os.path.join(RES, "srm_lambda.csv")
-    if os.path.exists(p):
+    for tag, cleaning in CLEANING:
+        p = os.path.join(RES, f"srm_lambda{tag}.csv")
+        if not os.path.exists(p):
+            continue
         s = pd.read_csv(p)
         s = s[s.analysis.str.contains("log-free") & (s.model == "fixed")]
         for r in s.itertuples():
             srm = r.analysis.startswith("srm")
+            roots = [x for x in str(r.roots).strip("[]").split(",") if x.strip()]
             out.append(dict(design="between sessions: test-retest",
                             dataset="SRM, 17-71 y" if srm else "Dortmund, 20-70 y",
+                            cleaning=cleaning,
                             spec=("SRM, eyes closed, later session" if srm else
                                   f"Dortmund, {'eyes closed' if 'ec_pre' in r.analysis else 'eyes open'}"
                                   ", 5 years"),
-                            n=r.n, lam=r.lam_gmm, lo=r.gmm_lo, hi=r.gmm_hi, calibration=""))
+                            n=r.n, lam=r.lam_gmm, lo=r.gmm_lo, hi=r.gmm_hi, calibration="",
+                            n_roots=len(roots), roots=str(r.roots)))
     p = os.path.join(RES, "ieeg_lambda.csv")
     if os.path.exists(p):
         cal = []
@@ -165,10 +141,14 @@ def main():
                             dataset="ds003688 iEEG", n=r.n_channels, lam=r.lam, lo=r.lo, hi=r.hi,
                             spec=f"{r.subset} channels, covariates: {r.covariates}",
                             calibration=", ".join(cal), n_patients=r.n_patients))
-    cols = ["design", "dataset", "spec", "n", "lam", "lo", "hi", "calibration",
-            "lam_alt", "lo_alt", "hi_alt", "n_patients", "lam_min", "lam_max"]
+            if r.subset == "all" and r.covariates == "none":
+                out[-1].update(V.get(("ds003688 iEEG", "rest"), {}))
+    cols = ["design", "dataset", "spec", "cleaning", "n", "lam", "lo", "hi", "calibration",
+            "n_patients", "lam_min", "lam_max", "n_roots", "roots"]
     O = pd.DataFrame(out).reindex(columns=cols)
+    O["cleaning"] = O.cleaning.fillna("none")
     O["n_patients"] = O.n_patients.astype("Int64")
+    O["n_roots"] = O.n_roots.astype("Int64")
     O.to_csv(os.path.join(RES, "identification_summary.csv"), index=False)
     pd.set_option("display.width", 220)
     print(O.round(3).to_string(index=False))
