@@ -5,21 +5,33 @@ Input: ieeg_epochs.py output (2-s epochs, bipolar pairs, three DPSS tapers).
 Each bipolar channel with a peak in 7-13 Hz (residual above the censored
 background fit > 0.1 in ln power, as in ds003690_lambda.py) is a unit with
 its own intrinsic strength; epochs flagged for gross artefacts are dropped.
-The analysis is that of ds003690_lambda.py (per-taper censored log-log fit
-over 2-40 Hz, 6-16 Hz left out, ap_models.loglog_fit; band = peak +/- 2 Hz;
+The analysis is that of ds003690_lambda.py (band = peak +/- 2 Hz; the
+background in the band from a power law through the flanks 2-6 and 26-32 Hz
+of each taper, rescaled to the channel's mean spectrum, ap_models.flank_level;
 T, B and the instrument from three different tapers, all six assignments
 pooled; lambda_gmm.estimate_levels), with EOG (0.5-4 Hz) and EMG
 (60-95 Hz) log power as optional covariates and a bootstrap over patients
 (all of a patient's channels together). Subsets: all channels with a peak,
-and posterior channels (pair midpoint y < -40 mm, ACPC).
+and posterior channels (pair midpoint y < -40 mm, ACPC). --background
+power-law gives the earlier background instead: a per-taper censored log-log
+fit over 2-40 Hz with 6-16 Hz left out (ap_models.loglog_fit), which keeps
+the alpha harmonic and the beta range in the fit.
 
 --simulate L replaces each channel by synthetic epochs built from its own
 mean background, peak and background fluctuation with coupling L
 (ds003690_lambda.simulate), as a check on data like these.
 
+--variants also writes this dataset's rows of
+results/within_recording_variants.csv (the primary and four other choices of
+flanks) and results/within_recording_controls.csv (two bands without a
+rhythm), all channels without covariates, as described in ds003690_lambda.py,
+with --nboot-variants bootstrap samples each.
+
 Usage: python ieeg_lambda.py [--data DIR] [--nboot 200] [--simulate L]
        [--subsets all,posterior] [--covsets none,EOG,"EOG + EMG"] [--tag _part]
-Writes results/ieeg_lambda.csv (or ieeg_lambda_sim<L>.csv).
+       [--background flanks|power-law] [--variants] [--nboot-variants 50]
+Writes results/ieeg_lambda.csv (or ieeg_lambda_sim<L>.csv), with _c16
+before the tag for the power-law background.
 """
 import argparse
 import glob
@@ -31,7 +43,8 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lambda_gmm as G
-from ds003690_lambda import GRID, band_arrays, iv_log, simulate, stack
+from ds003690_lambda import (CONTROLS, FLANKS, GRID, VARIANTS, band_arrays, control_row, iv_log,
+                             merge_rows, reliability, simulate, stack, tracking, variant_row)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RES = os.path.join(HERE, "..", "results")
@@ -75,7 +88,8 @@ def run(rows, use_cov, nboot, rng):
     ok = np.isfinite(bs)
     lo, hi = np.percentile(bs[ok], [2.5, 97.5]) if ok.sum() > 10 else (np.nan, np.nan)
     return dict(lam=est["lam"], lo=lo, hi=hi, fail=float(1 - ok.mean()), roots=str(est["roots"]),
-                n_channels=len(rows), n_patients=len(pats), n_epochs=int(T.size / 6),
+                n_roots=len(est["roots"]), n_channels=len(rows), n_units=len(rows),
+                n_patients=len(pats), n_epochs=int(T.size / 6),
                 gamma=np.round(est["gamma"], 3).tolist())
 
 
@@ -88,12 +102,19 @@ def main():
     ap.add_argument("--subsets", default="all,posterior")
     ap.add_argument("--covsets", default=",".join(COVSETS))
     ap.add_argument("--tag", default="", help="suffix for the output file (parallel runs)")
+    ap.add_argument("--background", choices=("flanks", "power-law"), default="flanks",
+                    help="flanks: power law through 2-6 and 26-32 Hz, rescaled to the mean "
+                         "spectrum; power-law: one fit over 2-40 Hz without 6-16 Hz")
+    ap.add_argument("--variants", action="store_true",
+                    help="also the other flanks and the bands without a rhythm (flanks only)")
+    ap.add_argument("--nboot-variants", type=int, default=50)
     a = ap.parse_args()
     rng = np.random.default_rng(a.seed)
     units = load(a.data)
     if a.simulate is not None:
         units = simulate(units, a.simulate, rng)
-    rows = band_arrays(units)
+    flanks = FLANKS if a.background == "flanks" else None
+    rows = band_arrays(units, flanks)
     ypos = {u["subject"]: u["y"] for u in units}
     for r in rows:
         r["y"] = ypos[r["subject"]]
@@ -104,7 +125,7 @@ def main():
           f"{len({r['group'] for r in rows})} patients; reliability of ln b across tapers "
           f"{rel:.2f}; IV-log (a > 0) {lam_iv:.3f} (n {n_iv})", flush=True)
     out = []
-    for subset in a.subsets.split(","):
+    for subset in filter(None, a.subsets.split(",")):            # --subsets "": variants only
         rr = rows if subset == "all" else [r for r in rows if r["y"] < -40]
         sets = [(c, COVSETS[c]) for c in a.covsets.split(",")]
         for cname, use_cov in (sets if a.simulate is None else [("none", [])]):
@@ -115,8 +136,26 @@ def main():
                   f"[{r['lo']:+.2f}, {r['hi']:+.2f}] fail {r['fail']:.2f} "
                   f"channels {r['n_channels']} patients {r['n_patients']} roots {r['roots']}",
                   flush=True)
-    name = ("ieeg_lambda" if a.simulate is None else f"ieeg_lambda_sim{a.simulate}") + a.tag + ".csv"
-    pd.DataFrame(out).to_csv(os.path.join(RES, name), index=False)
+    suffix = "" if flanks else "_c16"
+    name = (("ieeg_lambda" if a.simulate is None else f"ieeg_lambda_sim{a.simulate}")
+            + suffix + a.tag + ".csv")
+    if out:
+        pd.DataFrame(out).to_csv(os.path.join(RES, name), index=False)
+    if not a.variants or flanks is None or a.simulate is not None:
+        return
+    # other flanks, and bands without a rhythm; all channels, no covariates
+    key = dict(dataset="ds003688 iEEG", recording="rest")
+    var = []
+    for fl in (FLANKS,) + VARIANTS:
+        rr = band_arrays(units, fl)
+        var.append(variant_row(key, fl, run(rr, [], a.nboot_variants, rng), reliability(rr)))
+    ctl = []
+    for band, fl in CONTROLS:
+        rr = band_arrays(units, fl, band)
+        ctl.append(control_row(key, band, fl, run(rr, [], a.nboot_variants, rng),
+                               tracking(*stack(rr, [])[:4], a.nboot_variants, rng), reliability(rr)))
+    merge_rows("within_recording_variants.csv", var)
+    merge_rows("within_recording_controls.csv", ctl)
 
 
 if __name__ == "__main__":
